@@ -1,6 +1,41 @@
-# Production rollout checkpoint — 2026-09-15
+# Production rollout — 2026-09-15
 
-The goal is still **active**. Do not send the final push or report completion yet.
+**Software delivery verified: v0.1.1 runs on both Mac and Pi.** Final real brain
+and Pi Claude round trips pass, and Agent Monitor PR16 is ready for review.
+The completion push remains pending; the goal is active until its submission.
+
+## Final release
+
+- Release: https://github.com/joaohts/comms/releases/tag/v0.1.1
+- Commit: `e25e8ea1a7292ed4848a22b12745d6594c3a84ad`.
+- Release34972108320 and CI34972108279 passed; actual uploaded hashes:
+
+| Archive | SHA256 |
+|---|---|
+| Darwin arm64 | `88f92510db1f251346986d5eaa839d26a107a18ca35a683108892aa77116aeb5` |
+| Darwin amd64 | `d632d9b77b13f9fd2a2985852248557e378e65cc524670d575997474e60b6c34` |
+| Linux arm64 | `1629e026277b65e8662a510925b02056bc7542e968bff2f63bec4a5a37f12231` |
+
+Both machines installed these verified archives successfully, preserving keys,
+identities, grants, legacy CLI/skills and queues. Brain's release adapter was
+already identical; no extra brain restart was needed for the packaging patch.
+
+Final request/reply IDs and CI evidence are in [VERIFICATION.md](VERIFICATION.md).
+Brain returned **BRAIN_FINAL_V011** and the fresh Pi Claude returned
+**CLAUDE_FINAL_V011**, with both directions durably handed off. Brain is still
+persistent under its original new-node ID. Legacy public `/who` returned200.
+The final Pi sample measured **19.09 MiB RSS / 0.500% of one core over30 seconds**.
+
+[Agent Monitor PR16](https://github.com/joaohts/agent-monitor/pull/16) is ready,
+unmerged, and pins this release. Full bundled build, codesign verification,
+actual viewer-client queries and final macOS CI34972617606 passed. The user's
+original dirty AgentMonitor.swift remains untouched.
+
+## Earlier rollout checkpoints — historical
+
+The following records retain the candidate rollout and the upgrade issue that
+led to v0.1.1. Their outstanding-work lists have been superseded by the final
+release evidence above.
 
 ## Repositories and release
 

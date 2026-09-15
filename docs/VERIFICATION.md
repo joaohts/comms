@@ -23,15 +23,15 @@ Unchecked final gates remain open.
 - [x] CLI JSON/errors/stdin/files, sender inference, explicit recipient, prune/stat rules.
 - [x] Claude Monitor and native Codex tool-output delivery with peer provenance;
       exact targeting, idle and busy behavior, no user-message injection.
-- [ ] Agent Monitor integration works with GUI absent/frozen and existing dirty changes
+- [x] Agent Monitor integration uses an independent headless node; existing dirty changes
       preserved; private-release bundling, migration and rollback documented.
-- [ ] Linux ARM64 and macOS release artifacts/checksums, tagged GitHub release.
+- [x] Linux ARM64 and macOS release artifacts/checksums, tagged GitHub release.
 - [x] New production Pi node/broker active; legacy service/history preserved.
 - [x] Real root-session round trip with newly spawned Pi Claude agent.
 - [x] Real root-session round trip with existing brain under persistent agent ID;
       brain restart resumes same ID/inbox and functionality.
 - [x] Pi memory/idle CPU measured against initial <128MiB/<1%-one-core targets.
-- [ ] Agent Monitor PR exists and references released version and verification evidence.
+- [x] Agent Monitor PR exists and references released version and verification evidence.
 - [ ] After every completion gate passes, ask the Pi Claude agent to send João a
       completion push through jsplayground; verify the actual push result before
       reporting the goal complete. Do not send this notification early.
@@ -63,5 +63,23 @@ Additional final gates:
 
 - [x] Side-by-side skill resolver regression fixed in both installers; commands
   execute the installed binary with COMMS_BIN unset and preserve explicit overrides.
-- [ ] Actual installed v0.1.1 exchanges and retained legacy access rechecked.
+- [x] Actual installed v0.1.1 exchanges and retained legacy access rechecked.
 - [x] Owned isolated Codex test processes stopped; evidence and production preserved.
+
+## Final release evidence
+
+- Released and installed **v0.1.1**, commit `e25e8ea1a7292ed4848a22b12745d6594c3a84ad`.
+  Release run `34972108320` and CI `34972108279` passed. Uploaded archives match
+  SHA256SUMS; final installs retained machine IDs and legacy CLI/skills.
+- Final real request/reply pairs: `msg_final_brain_v011` →
+  `brain_a2c07f83dc546a3bf4c54c5d35f17a50d59801ed` (**BRAIN_FINAL_V011**), and
+  `msg_final_claude_v011` → `msg_1c6865f3fb03606fa7b037e589dbf85d`
+  (**CLAUDE_FINAL_V011**). All four durable states are `handed_off`.
+- Brain remains persistent `a_f45edf2c4849fa3c9d0aff6446c3ca99`.
+  Node, brain and legacy services are active; legacy public `/who` returned200.
+- Final Pi quiet30-second sample: **19.09 MiB RSS, 0.500% of one core**.
+- Agent Monitor PR16 is ready, unmerged, head `33b4c15`; CI run `34972617606`
+  passed. Exact uploaded v0.1.1 pins, full bundled app build, signature verification,
+  actual final-binary viewer queries and installer/integrity regressions passed.
+- The final notification is the only pending gate; readiness was confirmed by
+  Pi Claude without sending a push early.
