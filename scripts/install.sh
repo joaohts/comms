@@ -20,6 +20,58 @@ start=1
 service=1
 skills=1
 replace_legacy=0
+skill_backup_root="${XDG_STATE_HOME:-$HOME/.local/state}/comms/skill-backups"
+
+# BEGIN COMMS_SKILL_BACKUP
+backup_comms_skill() {
+  local comms_skill_source="$1" comms_skill_harness="$2" comms_skill_name="$3" comms_backup_root="$4"
+  local comms_backup_batch
+  comms_backup_batch=$(umask 077; mkdir -p "$comms_backup_root"; mktemp -d "$comms_backup_root/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
+  mkdir -m 700 "$comms_backup_batch/$comms_skill_harness"
+  cp -Rp "$comms_skill_source" "$comms_backup_batch/$comms_skill_harness/$comms_skill_name"
+  printf 'Preserved skill backup: %s\n' "$comms_backup_batch/$comms_skill_harness/$comms_skill_name" >&2
+}
+# END COMMS_SKILL_BACKUP
+
+
+# BEGIN COMMS_LAUNCHD_RESTART
+restart_comms_launch_agent() {
+  local comms_domain="$1" comms_plist="$2" comms_job="$1/com.joaohts.comms"
+  local comms_old_job comms_old_pid='' comms_had_job=0 comms_removed=0
+  local comms_poll comms_boot_error comms_boot_status=0
+  if comms_old_job=$(launchctl print "$comms_job" 2>/dev/null); then
+    comms_had_job=1
+    comms_old_pid=$(printf '%s\n' "$comms_old_job" | awk '/^[[:space:]]*pid = [0-9]+/ {print $3; exit}')
+    launchctl bootout "$comms_job" 2>/dev/null || true
+    # bootout can return before launchd removes the job or the old node finishes
+    # its drain. Wait for both, with room beyond the 15-second ExitTimeOut.
+    for ((comms_poll=0;comms_poll<100;comms_poll++)); do
+      if ! launchctl print "$comms_job" >/dev/null 2>&1 &&
+         { [[ -z "$comms_old_pid" ]] || ! kill -0 "$comms_old_pid" 2>/dev/null; }; then
+        comms_removed=1; break
+      fi
+      sleep 0.2
+    done
+    if (( comms_removed == 0 )); then
+      printf 'Previous comms launch agent did not finish stopping within 20 seconds.\n' >&2
+      return 1
+    fi
+  fi
+  for ((comms_poll=0;comms_poll<10;comms_poll++)); do
+    if comms_boot_error=$(launchctl bootstrap "$comms_domain" "$comms_plist" 2>&1); then
+      return 0
+    else
+      comms_boot_status=$?
+    fi
+    # EIO immediately after an existing job's removal can be transient. Other
+    # errors, and fresh-install failures, retain their original status/message.
+    if (( comms_had_job == 0 || comms_boot_status != 5 )); then break; fi
+    sleep 0.2
+  done
+  printf '%s\n' "$comms_boot_error" >&2
+  return "$comms_boot_status"
+}
+# END COMMS_LAUNCHD_RESTART
 
 usage() {
   cat <<'EOF'
@@ -128,14 +180,15 @@ mv -f "$target.new" "$target"
 if (( skills )); then
   skill_name=open-comms
   [[ "$binary_name" == comms ]] || skill_name="open-$binary_name"
-  for skill_root in "$HOME/.claude/skills" "${CODEX_HOME:-$HOME/.codex}/skills"; do
+  for skill_harness in claude codex; do
+    if [[ "$skill_harness" == claude ]]; then skill_root="$HOME/.claude/skills"; else skill_root="${CODEX_HOME:-$HOME/.codex}/skills"; fi
     skill_dir="$skill_root/$skill_name"
     if [[ -f "$skill_dir/SKILL.md" ]] && ! cmp -s "$bundle_dir/integration/open-comms/SKILL.md" "$skill_dir/SKILL.md"; then
       if (( replace_legacy == 0 )) && ! grep -Fq '<!-- comms installer managed skill -->' "$skill_dir/SKILL.md"; then
         printf 'Preserved existing skill: %s (use --replace-legacy to back it up and replace).\n' "$skill_dir" >&2
         continue
       fi
-      cp -Rp "$skill_dir" "$skill_dir.backup-$stamp"
+      backup_comms_skill "$skill_dir" "$skill_harness" "$skill_name" "$skill_backup_root"
     fi
     mkdir -p "$skill_dir"
     install -m 644 "$bundle_dir/integration/open-comms/SKILL.md" "$skill_dir/SKILL.md"
@@ -145,11 +198,13 @@ if (( skills )); then
 # BEGIN COMMS_SKILL_RENDER
 import json,pathlib,re,sys
 p=pathlib.Path(sys.argv[1]); command=str(pathlib.Path(sys.argv[2]).absolute())
-skill,marker=sys.argv[3:5]
+skill,marker=sys.argv[3:5]; label=pathlib.Path(command).name
 escaped=re.sub(r'([\\$`"])',r'\\\1',command)
 resolver='${COMMS_BIN:-"'+escaped+'"}'
 executable='"'+resolver+'"'
 text=p.read_text().replace('name: open-comms\n','name: '+skill+'\n',1)
+preamble='Resolve the CLI from `COMMS_BIN` when set, otherwise use `comms`. In all\ncommands below, `comms` means that resolved executable. Quote the executable\nas `"${COMMS_BIN:-comms}"` in shell commands; never overwrite PATH or fall back\nto a legacy board when the new node is unavailable.\n'
+text=text.replace(preamble,'Resolve the CLI from `COMMS_BIN` when set; otherwise use `'+command+'`.\nIn prose, `'+label+'` names that executable. Shell examples honor the same override.\nNever change PATH or fall back to a legacy board when the node is unavailable.\n',1)
 def monitor(match):
     value=json.loads(match.group('command')).replace('${COMMS_BIN:-comms}',resolver)
     value=re.sub(r'^comms(?=\s|$)',lambda _:executable,value)
@@ -157,8 +212,10 @@ def monitor(match):
 text=re.sub(r'(?P<prefix>Monitor\(\{\s*command:\s*)(?P<command>"(?:\\.|[^"\\])*")',monitor,text)
 text=text.replace('${COMMS_BIN:-comms}',resolver)
 text=re.sub(r'(?m)^comms(?=\s)',lambda _:executable,text)
-text=re.sub(r'`comms(?= |`)',lambda _:'`'+executable,text)
-text+='\n<!-- '+marker+' -->\n\nInstalled executable: `'+command+'`. COMMS_BIN may explicitly override it.\n'
+text=re.sub(r'`comms(?= |`)',lambda _:'`'+label,text)
+codex_sentence='**Codex:** launch or explicitly resume through `'+label+' codex` first.'
+text=text.replace(codex_sentence,codex_sentence+'\n\n```sh\n'+executable+' codex\n```\n',1)
+text+='\n<!-- '+marker+' -->\n'
 p.write_text(text)
 # END COMMS_SKILL_RENDER
 PY
@@ -186,8 +243,7 @@ job={'Label':'com.joaohts.comms','ProgramArguments':[binary]+sys.argv[4:],
 with open(path,'wb') as f: plistlib.dump(job,f)
 PY
       if (( start )); then
-        launchctl bootout "gui/$(id -u)/com.joaohts.comms" 2>/dev/null || true
-        launchctl bootstrap "gui/$(id -u)" "$plist"
+        restart_comms_launch_agent "gui/$(id -u)" "$plist"
       fi
       ;;
     Linux)

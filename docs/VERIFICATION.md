@@ -63,5 +63,5 @@ Additional final gates:
 
 - [x] Side-by-side skill resolver regression fixed in both installers; commands
   execute the installed binary with COMMS_BIN unset and preserve explicit overrides.
-- [ ] Actual installed v0.1.0 exchanges and retained legacy access rechecked.
+- [ ] Actual installed v0.1.1 exchanges and retained legacy access rechecked.
 - [x] Owned isolated Codex test processes stopped; evidence and production preserved.

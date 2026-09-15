@@ -3,7 +3,7 @@
 A local-first, encrypted communication service for agent sessions. A single Go
 executable provides a machine-local node, CLI, and optional broker role.
 
-The release candidate is deployed on a Mac and Pi with direct Claude and brain
+The node is deployed on a Mac and Pi with direct Claude and brain
 round trips. See [rollout evidence](docs/ROLLOUT.md) for the current verification
 state. The legacy service and its history remain separate during migration.
 
@@ -26,7 +26,7 @@ updating the viewer's pin is an explicit reviewed change, with no automatic
 download of a moving `latest` binary.
 
 ```sh
-gh release download v0.1.0 --repo joaohts/comms \
+gh release download v0.1.1 --repo joaohts/comms \
   --pattern comms_Linux_arm64.tar.gz --pattern SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
 tar -xzf comms_Linux_arm64.tar.gz

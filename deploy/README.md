@@ -13,7 +13,7 @@ a private repository, use your existing `gh` login; never embed a token in the
 binary, installer, URL, or Agent Monitor bundle:
 
 ```sh
-gh release download v0.1.0 --repo joaohts/comms \
+gh release download v0.1.1 --repo joaohts/comms \
   --pattern comms_Linux_arm64.tar.gz --pattern SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
 tar -xzf comms_Linux_arm64.tar.gz
@@ -65,7 +65,8 @@ legacy listener and proxy endpoint must be a separately scheduled deployment
 operation; the installer does not do it or restart that legacy service.
 
 When ready to use the standard command and new skill, explicitly run with
-`--replace-legacy`. Changed files are backed up with timestamped names. Keep those
+`--replace-legacy`. Changed binaries are backed up with timestamped names. Skill backups are kept
+outside active skill directories under `${XDG_STATE_HOME:-~/.local/state}/comms/skill-backups/`. Keep those
 backups and the old service available until every migrated integration is tested.
 For consistent SQLite backups of a live legacy database, use its SQLite backup
 API; copying the `.db` alone while WAL is active is insufficient.

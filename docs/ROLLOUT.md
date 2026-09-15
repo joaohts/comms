@@ -15,7 +15,7 @@ The goal is still **active**. Do not send the final push or report completion ye
 - Agent Monitor draft PR: https://github.com/joaohts/agent-monitor/pull/16
   in `/Users/joaohts/fun/agent-monitor-comms-v1`, branch `feat/comms-node-v1`.
   Existing dirty `~/fun/agent-monitor/AgentMonitor.swift` was preserved.
-- PR still needs exact **final v0.1.0 uploaded asset hashes**, final bundle build,
+- PR still needs exact **final v0.1.1 uploaded asset hashes**, final bundle build,
   latest CI review and ready-for-review status. Do not merge without a request.
 
 ## Live candidate services
@@ -136,12 +136,33 @@ No private keys or bearer credentials belong in this document.
 
 1. Completed: both skill installers resolve the installed new CLI when `COMMS_BIN`
    is unset. The focused command-execution regression passes in both repositories.
-2. Create final **v0.1.0** through release CI, verify uploaded checksums and upgrade
+2. Create final **v0.1.1** through release CI, verify uploaded checksums and upgrade
    both candidates while preserving identities and legacy routing.
-3. Repeat actual brain and Pi Claude exchanges on installed v0.1.0.
+3. Repeat actual brain and Pi Claude exchanges on installed v0.1.1.
 4. Pin uploaded hashes in Agent Monitor PR 16, verify full bundle/CI, mark ready.
 5. Audit VERIFICATION.md, then request the Pi Claude's final jsplayground push,
    verify actual submission, and only then complete the goal.
 
 User delegated remaining engineering details. No new broad approval round is
 needed for authorized implementation, deployment, releases, configuration or PR.
+
+## Initial release and upgrade correction
+
+- Published **v0.1.0** at `a22f50041b270e603b5d259a8d8a245d92c1ea89`.
+  Release run `34970443555` and main CI `34970443248` passed.
+- Downloaded and verified every uploaded platform archive. Mac and Pi now run
+  v0.1.0 with unchanged machine IDs, peers and grants. The Pi upgrade also
+  preserved legacy CLI/skill content; the brain patch installer was a no-op.
+- The actual Mac upgrade exposed an asynchronous launchd removal race: immediate
+  bootstrap failed with EIO while the old job was exiting. A later bootstrap
+  succeeded and restored the node. v0.1.1 will include a bounded upgrade wait and
+  regression test. Published v0.1.0 assets will not be replaced.
+- Consistent pre-upgrade backups passed integrity checks in each machine's
+  `~/.local/state/comms/node-backups/20260915T124010Z/`.
+
+- The bounded launchd restart function passed against the actual Mac service:
+  it returned to a connected state in 16.15 seconds with the same machine ID.
+  Four deterministic restart/error cases also pass.
+- Both installers now keep skill backups outside active discovery roots under
+  `~/.local/state/comms/skill-backups/`; repeat-backup and real command-resolution
+  tests pass. The previously created Pi backup was preserved there.
