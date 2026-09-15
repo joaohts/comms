@@ -1,0 +1,80 @@
+# Local and broker API v1
+
+Working implementation contract. The server returns JSON errors with `code` and
+`error`. Mutations validate/commit before returning success. Unix socket is
+`<data-dir>/node.sock`; owner-only directory/socket permissions are mandatory.
+Default data dir is `$COMMS_DATA_DIR` or `~/.local/share/comms`.
+
+`comms serve [--data-dir PATH] [--broker-listen 127.0.0.1:PORT]` runs the service.
+Broker HTTPS termination is configured in front of its loopback listener.
+
+## Local routes
+
+| Route | Purpose |
+|---|---|
+| GET /v1/status | Version, machine ID, public key, role and connection status |
+| GET /v1/agents | Local identities; `persistent=true` filters saved identities |
+| DELETE /v1/agents/{id} | Retire identity and fail its pending mail |
+| POST /v1/sessions | Open/resume and attach atomically |
+| PUT /v1/sessions/{id}/lease | Renew attachment |
+| DELETE /v1/sessions/{id} | Close attachment |
+| GET /v1/sessions/{id}/stream | Receiver stream; never used by GUI observers |
+| POST /v1/sessions/{id}/handoffs | Correlated delivery-attempt result |
+| POST /v1/messages | Queue a send, resolving alias once |
+| GET /v1/messages | Read-only history/inbox filters and pagination |
+| GET /v1/messages/{id} | Message status |
+| POST /v1/messages/{id}/resolve | Explicit operator resolution of uncertain handoff |
+| POST /v1/prune | Prune completed content, retain replay headers until expiry |
+| GET /v1/who | Local plus granted remote discovery |
+| GET/PUT /v1/peers[/{id}] | List/import out-of-band verified public identities |
+| GET/PUT /v1/grants[/{id}] | Versioned messaging/history grants |
+| GET /v1/stats | Derived local statistics, excluding pruned records |
+| GET /v1/events | Bounded observational change notifications |
+| PUT /v1/broker | Configure broker URL and authenticate |
+| POST /v1/history | Local or end-to-end encrypted remote history query |
+
+Session request fields: `alias`, `persistent`, `scope` (`local`/`global`), `harness`
+(`claude`/`codex`/`service`), `harness_session_id`, optional `delivery_target`,
+optional verified `process_id`, `process_started`, and explicit `takeover`.
+Response includes `agent` and `session`, containing immutable IDs.
+Receiver streams renew their own lease; keepalives never become model notifications.
+
+Codex attachments require an already loaded app-server thread and private Unix
+target. The node attaches its native tool-output receiver automatically; a plain
+stdout stream cannot consume a Codex attachment. See [Codex integration](CODEX.md).
+
+Uncertain handoffs can be explicitly resolved with `comms resolve ID --status
+handed_off|retry|undeliverable [--sender MACHINE_ID]`. Retry is an operator choice
+that may duplicate a previously accepted handoff. Positive late confirmation from
+the original receiver is accepted only for the unchanged attachment/attempt.
+
+Send request: `session_id`, `to`, `body`, optional `id`. Reply includes the durable
+message ID and state. Aliases in `to` are `agent` locally and `peer:agent` remotely.
+Sender identity/scope is taken from the attached session, not arbitrary `from` data.
+
+## Broker routes
+
+| Route | Purpose |
+|---|---|
+| POST /v1/auth/challenges | Start self-service identity registration/auth |
+| POST /v1/auth/complete | Consume purpose-bound possession proof; issue credential |
+| PUT /v1/presence | Versioned global-agent snapshot and node heartbeat |
+| PUT /v1/grants/{peer} | Authenticated caller's grant/revocation |
+| GET /v1/who | Authorized presence only |
+| POST /v1/messages | Queue ciphertext subject to receiver's grant and quota |
+| POST /v1/receipts | Queue bounded receipts; receiving endpoint validates correlation |
+| GET /v1/stream | Ciphertext queue plus separate transient query notifications |
+| POST /v1/acks | Delete recipient-owned queue item after durable receipt |
+| POST /v1/history/{machine} | Bounded online encrypted query relay |
+| POST /v1/history-results/{request} | Correlated encrypted result, not agent mail |
+
+Only `message` and `receipt` are durable envelope kinds. History is a bounded
+in-memory HTTP query/response relay, never broker history or an agent inbox entry.
+The broker authenticates its caller and cannot claim another sender in request JSON.
+
+## Agent Monitor integration
+
+CLI `status`, `who`, `identities`, `events` support `--json`; events are NDJSON.
+Agent Monitor can use the bundled CLI as its Unix-socket client. Bundle a pinned
+release and checksums, install/start the node outside the GUI process lifecycle,
+and preserve existing identities/databases. No implicit plaintext-history import.

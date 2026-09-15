@@ -1,0 +1,12 @@
+/dist/
+/bin/
+*.db
+*.db-*
+*.sock
+*.log
+.env
+.DS_Store
+coverage.out
+/tmp/
+__pycache__/
+*.pyc
