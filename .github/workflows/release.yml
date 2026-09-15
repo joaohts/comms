@@ -16,6 +16,7 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
       - run: python3 -m unittest discover -s integration/brain -v
+      - run: python3 scripts/test_installed_skill.py
       - name: Build platform archives and checksums
         run: scripts/release.sh "$GITHUB_REF_NAME"
       - name: Publish release

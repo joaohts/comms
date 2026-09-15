@@ -17,5 +17,6 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
       - run: python3 -m unittest discover -s integration/brain -v
+      - run: python3 scripts/test_installed_skill.py
       - run: bash -n scripts/install.sh scripts/release.sh
       - run: scripts/release.sh 0.0.0-ci

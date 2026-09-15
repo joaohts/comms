@@ -746,7 +746,9 @@ func (a *app) serve(ctx context.Context, cfg comms.Config, args []string) error 
 	if err != nil {
 		return err
 	}
-	if err = node.Start(ctx); err != nil {
+	// Signal cancellation requests an orderly drain. It must not cancel the
+	// node's in-flight deliveries before Close has completed that drain.
+	if err = node.Start(context.Background()); err != nil {
 		_ = node.Close(context.Background())
 		return err
 	}

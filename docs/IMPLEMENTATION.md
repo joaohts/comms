@@ -41,7 +41,7 @@ Legacy code and history stay separate; no destructive legacy cutover is needed.
 - GUI is optional and outside delivery's process lifecycle. Slow UI/history work
   cannot occupy all delivery capacity. No private keys or broker credentials in GUI output.
 
-## Engineering choices to implement and test
+## Implemented engineering choices
 
 - Purpose-bound, single-use encrypted challenge for possession of X25519 keys;
   60-second challenge TTL and 24-hour broker credentials, server stores only hashes.
@@ -59,12 +59,6 @@ Legacy code and history stay separate; no destructive legacy cutover is needed.
   become uncertain. Explicit recovery never silently duplicates terminal input.
 - Process identity includes enough information to reject PID reuse; transient
   disconnect and system suspend do not alone permanently retire agent identities.
-
-## Work ownership
-
-- Root: comms repository, node/broker/CLI, Pi rollout, releases and end-to-end audit.
-- Existing `personal:worker`: isolated Agent Monitor worktree, integration PR,
-  migration documentation and Codex adapter investigation/integration coordination.
 
 ## Completion gate
 

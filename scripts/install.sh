@@ -126,10 +126,12 @@ install -m 755 "$binary" "$target.new"
 mv -f "$target.new" "$target"
 
 if (( skills )); then
+  skill_name=open-comms
+  [[ "$binary_name" == comms ]] || skill_name="open-$binary_name"
   for skill_root in "$HOME/.claude/skills" "${CODEX_HOME:-$HOME/.codex}/skills"; do
-    skill_dir="$skill_root/open-comms"
+    skill_dir="$skill_root/$skill_name"
     if [[ -f "$skill_dir/SKILL.md" ]] && ! cmp -s "$bundle_dir/integration/open-comms/SKILL.md" "$skill_dir/SKILL.md"; then
-      if (( replace_legacy == 0 )); then
+      if (( replace_legacy == 0 )) && ! grep -Fq '<!-- comms installer managed skill -->' "$skill_dir/SKILL.md"; then
         printf 'Preserved existing skill: %s (use --replace-legacy to back it up and replace).\n' "$skill_dir" >&2
         continue
       fi
@@ -137,13 +139,29 @@ if (( skills )); then
     fi
     mkdir -p "$skill_dir"
     install -m 644 "$bundle_dir/integration/open-comms/SKILL.md" "$skill_dir/SKILL.md"
-    # A side-by-side command name must be reflected in the installed skill.
-    if [[ "$binary_name" != comms ]]; then
-      python3 - "$skill_dir/SKILL.md" "$binary_name" <<'PY'
-import pathlib,re,sys
-p=pathlib.Path(sys.argv[1]); p.write_text(re.sub(r'\bcomms (?=(open|stream|identities|who|post|status|inbox|log|close|export|pair|grant|ungrant)\b)',sys.argv[2]+' ',p.read_text()))
+    # Bind every executable example, including the Monitor JSON string and
+    # Codex launcher, to this installed file rather than an ambiguous PATH name.
+    python3 - "$skill_dir/SKILL.md" "$target" "$skill_name" 'comms installer managed skill' <<'PY'
+# BEGIN COMMS_SKILL_RENDER
+import json,pathlib,re,sys
+p=pathlib.Path(sys.argv[1]); command=str(pathlib.Path(sys.argv[2]).absolute())
+skill,marker=sys.argv[3:5]
+escaped=re.sub(r'([\\$`"])',r'\\\1',command)
+resolver='${COMMS_BIN:-"'+escaped+'"}'
+executable='"'+resolver+'"'
+text=p.read_text().replace('name: open-comms\n','name: '+skill+'\n',1)
+def monitor(match):
+    value=json.loads(match.group('command')).replace('${COMMS_BIN:-comms}',resolver)
+    value=re.sub(r'^comms(?=\s|$)',lambda _:executable,value)
+    return match.group('prefix')+json.dumps(value,ensure_ascii=False)
+text=re.sub(r'(?P<prefix>Monitor\(\{\s*command:\s*)(?P<command>"(?:\\.|[^"\\])*")',monitor,text)
+text=text.replace('${COMMS_BIN:-comms}',resolver)
+text=re.sub(r'(?m)^comms(?=\s)',lambda _:executable,text)
+text=re.sub(r'`comms(?= |`)',lambda _:'`'+executable,text)
+text+='\n<!-- '+marker+' -->\n\nInstalled executable: `'+command+'`. COMMS_BIN may explicitly override it.\n'
+p.write_text(text)
+# END COMMS_SKILL_RENDER
 PY
-    fi
   done
 fi
 
