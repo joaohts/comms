@@ -360,7 +360,7 @@ func removeStaleCodexSocket(ctx context.Context, path string, record *codexServe
 	if !errors.Is(err, syscall.ECONNREFUSED) {
 		return fmt.Errorf("cannot establish that Codex socket is stale: %w", err)
 	}
-	if record == nil || !codexProcessEnded(*record) {
+	if record == nil || record.Target != "unix://"+path || !codexProcessEnded(*record) {
 		return errors.New("Codex socket has no confirmed ended owner; refusing to replace it")
 	}
 	return os.Remove(path)

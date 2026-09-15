@@ -31,6 +31,17 @@ comms codex
 comms codex resume <exact-thread-uuid>
 ```
 
+Put comms flags before `codex`, for example `comms --data-dir /private/comms
+codex resume <uuid>`. Arguments after `codex` belong to Codex and are preserved,
+including configuration overrides and prompts. The launcher owns `--remote`;
+use Codex directly for a different remote endpoint.
+
+The on-demand app-server uses `<data-dir>/codex/control.sock`, a startup lock,
+and a private PID/start-identity record. Concurrent launches reuse one server.
+A stale socket is removed only when its recorded owner is confirmed ended and
+its listener refuses connections. A timeout never triggers replacement of a
+live process. Runtime logs remain in `<data-dir>/codex/app-server.log`.
+
 Inside that session, `open-comms` opens the desired local or global comms
 identity. The node attaches the native delivery adapter automatically; users do
 not start a separate Codex `comms stream` or terminal-injection listener.
@@ -54,11 +65,17 @@ not start a separate Codex `comms stream` or terminal-injection listener.
    Exporting variables only into the terminal process is insufficient: tool
    shells are spawned by the shared app-server. Codex itself supplies the
    current `CODEX_THREAD_ID`. Refresh the PID override on every explicit resume.
+   The launcher also supplies `COMMS_DATA_DIR`, `COMMS_SOCKET`, and `COMMS_BIN`
+   so tool calls use the intended node and versioned CLI during legacy overlap.
+   Integrations should invoke `"$COMMS_BIN"` when it is available. Stale inherited
+   parent-session identity variables are removed.
    The [shell environment policy](https://learn.chatgpt.com/docs/config-file/config-sample)
    can additionally filter variables; report missing launcher values clearly.
 4. Register the attachment with that exact thread UUID, socket endpoint, and
    terminal PID plus process start identity. Do not infer ownership from the
    shell's parent: it is the shared app-server process.
+   The CLI requires a live verified `COMMS_HARNESS_PID` or explicit
+   `--process-id` for Codex; Claude retains its existing ancestry detection.
 5. Before becoming ready, call `codex.ValidateSession`. It reads thread metadata
    without loading, resuming, or modifying the thread. Only a matching, loaded
    thread with `canAcceptDirectInput=true` and `idle`/`active` status is ready.
@@ -151,6 +168,10 @@ Live tests on macOS, Codex CLI **0.154.0**, 2026-09-15:
 | Compiled Go adapter | `TestLiveDeliver` verified API acceptance, persisted tool output, and a fresh matching assistant reply |
 | Launcher environment | Native tool shell reported the correct terminal PID and target, its exact thread ID, and a different shared app-server parent PID |
 | Resume | Fresh tool output reported the new terminal PID with the same thread UUID and target |
+| Actual node queue | HTTP session registration and send traversed SQLite, scheduler, native adapter, model, and durable `handed_off` with one attempt |
+| Node restart | The same stored agent and attachment resumed native delivery automatically after restarting the node; a second marker produced a fresh reply |
+| Compiled launcher | A new real TUI launched through `comms codex`, ran `$COMMS_BIN open` itself, and received a CLI-posted marker as native peer output |
+| Compiled launcher exit/resume | Closing that TUI retired its ephemeral comms identity while app-server survived; `comms codex resume` reused the server and saved Codex thread, refreshed the TUI PID, created a fresh default comms identity, and received another native marker |
 
 The adapter has protocol tests for private socket validation, inactive/mismatched
 threads, active and idle handoff, malformed replies, overload, lost replies,
@@ -169,6 +190,16 @@ go test -v ./internal/codex -run '^TestLiveDeliver$' -count=1
 
 Do not point live probes at unrelated user sessions. Routine unit tests skip
 live model calls unless both variables are supplied.
+
+The equivalent full-node live integration test additionally restarts its
+isolated node and verifies delivery with the same identity and attachment:
+
+```sh
+COMMS_CODEX_TEST_TARGET=unix:///absolute/test/control.sock \
+COMMS_CODEX_TEST_THREAD=<owned-test-thread-uuid> \
+COMMS_CODEX_TEST_PID=<owning-terminal-pid> \
+go test -v ./internal/comms -run '^TestNodeNativeCodexLive$' -count=1
+```
 
 The app-server transport is experimental in the upstream documentation. The
 verified compatibility baseline is Codex 0.154.0; repeat the native acceptance

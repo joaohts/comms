@@ -311,7 +311,7 @@ func (a *app) open(ctx context.Context, args []string) error {
 		*target = a.getenv("COMMS_CODEX_TARGET")
 	}
 	if *harness == "codex" && *target == "" {
-		return &client.Error{Code: "receiver_setup_required", Message: "Codex requires a supported app-server tool-output receiver target; set COMMS_CODEX_TARGET or --target after installing that integration. Terminal user-message injection is not supported."}
+		return &client.Error{Code: "receiver_setup_required", Message: "start this Codex session with comms codex, or explicitly resume it with comms codex resume THREAD, before opening comms; native tool-output delivery requires its local app-server target"}
 	}
 	if *pid == 0 && a.getenv("COMMS_HARNESS_PID") != "" {
 		v, e := strconv.Atoi(a.getenv("COMMS_HARNESS_PID"))
@@ -320,7 +320,17 @@ func (a *app) open(ctx context.Context, args []string) error {
 		}
 		*pid = v
 	}
-	if *pid == 0 && (*harness == "claude" || *harness == "codex") {
+	if *harness == "codex" {
+		if *pid <= 0 {
+			return &client.Error{Code: "receiver_setup_required", Message: "Codex terminal ownership is missing: launch with comms codex (or comms codex resume THREAD), or supply the actual owning terminal --process-id; the shared app-server PID is not a terminal identity"}
+		}
+		actual := comms.ProcessStamp(*pid)
+		if actual == "" || (*started != "" && *started != actual) {
+			return &client.Error{Code: "receiver_setup_required", Message: "the selected Codex terminal process is unavailable or its start identity changed; resume with comms codex and reopen comms"}
+		}
+		*started = actual
+	}
+	if *pid == 0 && *harness == "claude" {
 		*pid = detectHarnessProcess(*harness)
 	}
 	if *pid > 0 && *started == "" {

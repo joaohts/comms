@@ -340,7 +340,8 @@ class BrainComms:
         if connection:
             with contextlib.suppress(OSError, AttributeError):
                 connection.sock.shutdown(socket.SHUT_RDWR)
-            connection.close()
+            # The reader owns HTTPResponse/connection close. Closing its file
+            # object concurrently with readline races http.client's chunk parser.
 
     def start(self):
         if self.threads:
@@ -369,6 +370,7 @@ class BrainComms:
     def _receive_loop(self):
         while not self.stop.is_set():
             response = None
+            connection = None
             try:
                 opened = self.attach()
                 connection, response = self.client.stream(opened["session"]["id"])
@@ -407,7 +409,11 @@ class BrainComms:
             finally:
                 if response:
                     response.close()
-                self._close_stream()
+                with self.lock:
+                    if self.stream_connection is connection:
+                        self.stream_connection = None
+                if connection:
+                    connection.close()
             self.stop.wait(self.retry_interval)
 
     def _lease_loop(self):

@@ -117,10 +117,11 @@ def install(root, backup_root=None, dry_run=False):
                                        "before": digest(original) if original is not None else None,
                                        "after": digest(data), "mode": mode}
     atomic_write(backup / "manifest.json", json.dumps(manifest, indent=2).encode(), 0o600)
-    for relative, data in changed.items():
-        atomic_write(root / relative, data, manifest["files"][relative]["mode"])
+    for relative in sorted(changed):
+        # Module first: both optional hooks can import it throughout installation.
+        atomic_write(root / relative, changed[relative], manifest["files"][relative]["mode"])
     return {"changed": sorted(changed), "backup": str(backup),
-            "service_restarted": False, "enabled": False}
+            "service_restarted": False, "configuration_changed": False}
 
 
 def rollback(backup):

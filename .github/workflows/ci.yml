@@ -16,5 +16,6 @@ jobs:
           cache: true
       - run: go test -race ./...
       - run: go vet ./...
+      - run: python3 -m unittest discover -s integration/brain -v
       - run: bash -n scripts/install.sh scripts/release.sh
       - run: scripts/release.sh 0.0.0-ci

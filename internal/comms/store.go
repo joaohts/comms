@@ -1,6 +1,7 @@
 package comms
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 )
 
 type Store struct {
+	ReadDB   *sql.DB
 	DB       *sql.DB
 	Identity Identity
 	cfg      Config
@@ -154,9 +156,34 @@ CREATE INDEX IF NOT EXISTS message_history ON messages(created_at,id);
 		db.Close()
 		return nil, e
 	}
+	readURL := url.URL{Scheme: "file", Path: filepath.Join(cfg.DataDir, "node.db")}
+	rq := readURL.Query()
+	rq.Set("mode", "ro")
+	rq.Add("_pragma", "query_only(1)")
+	rq.Add("_pragma", "busy_timeout(5000)")
+	rq.Add("_pragma", "cache_size(-2048)")
+	readURL.RawQuery = rq.Encode()
+	s.ReadDB, e = sql.Open("sqlite", readURL.String())
+	if e != nil {
+		db.Close()
+		return nil, e
+	}
+	s.ReadDB.SetMaxOpenConns(2)
+	s.ReadDB.SetMaxIdleConns(2)
+	if e = s.ReadDB.Ping(); e != nil {
+		s.ReadDB.Close()
+		db.Close()
+		return nil, e
+	}
 	return s, nil
 }
-func (s *Store) Close() error { return s.DB.Close() }
+func (s *Store) Close() error {
+	var e error
+	if s.ReadDB != nil {
+		e = s.ReadDB.Close()
+	}
+	return errors.Join(e, s.DB.Close())
+}
 func (s *Store) Setting(key string) string {
 	var v string
 	s.DB.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&v)
@@ -669,7 +696,12 @@ func (s *Store) PendingOutgoing(limit int) ([]Message, error) {
 	return s.selectMessages(`WHERE sender_machine_id=? AND recipient_machine_id<>? AND state IN('queued','forwarded') AND next_attempt_at<=? AND expires_at>? ORDER BY kind DESC,created_at,id LIMIT ?`, s.Identity.MachineID, s.Identity.MachineID, Now(), Now(), limit)
 }
 func (s *Store) selectMessages(tail string, args ...any) ([]Message, error) {
-	r, e := s.DB.Query(`SELECT `+msgCols+` FROM messages `+tail, args...)
+	return selectMessagesDB(s.DB, tail, args...)
+}
+func selectMessagesDB(db *sql.DB, tail string, args ...any) ([]Message, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	r, e := db.QueryContext(ctx, `SELECT `+msgCols+` FROM messages `+tail, args...)
 	if e != nil {
 		return nil, e
 	}
@@ -837,7 +869,7 @@ func (s *Store) History(agent string, limit int, cursor string, pending, remote 
 	}
 	q += ` ORDER BY created_at,sender_machine_id,id LIMIT ?`
 	args = append(args, limit+1)
-	all, e := s.selectMessages(q, args...)
+	all, e := selectMessagesDB(s.ReadDB, q, args...)
 	if e != nil {
 		return HistoryPage{}, e
 	}
@@ -879,7 +911,9 @@ func (s *Store) History(agent string, limit int, cursor string, pending, remote 
 }
 func (s *Store) Stats() (map[string]any, error) {
 	var total, sent, received, bytes, failed, handed int64
-	e := s.DB.QueryRow(`SELECT count(*),COALESCE(sum(sender_machine_id=?),0),COALESCE(sum(recipient_machine_id=?),0),COALESCE(sum(length(CAST(body AS BLOB))+COALESCE(length(wire_envelope),0)),0),COALESCE(sum(state IN('undeliverable','expired')),0),COALESCE(sum(state='handed_off'),0) FROM messages WHERE kind='message' AND pruned_at IS NULL`, s.Identity.MachineID, s.Identity.MachineID).Scan(&total, &sent, &received, &bytes, &failed, &handed)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	e := s.ReadDB.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(sender_machine_id=?),0),COALESCE(sum(recipient_machine_id=?),0),COALESCE(sum(length(CAST(body AS BLOB))+COALESCE(length(wire_envelope),0)),0),COALESCE(sum(state IN('undeliverable','expired')),0),COALESCE(sum(state='handed_off'),0) FROM messages WHERE kind='message' AND pruned_at IS NULL`, s.Identity.MachineID, s.Identity.MachineID).Scan(&total, &sent, &received, &bytes, &failed, &handed)
 	return map[string]any{"messages": total, "sent": sent, "received": received, "stored_payload_bytes": bytes, "failed": failed, "handed_off": handed}, e
 }
 

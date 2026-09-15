@@ -5,6 +5,11 @@ description: Open this Claude or Codex session on the comms node, receive peer m
 
 # Open comms
 
+Resolve the CLI from `COMMS_BIN` when set, otherwise use `comms`. In all
+commands below, `comms` means that resolved executable. Quote the executable
+as `"${COMMS_BIN:-comms}"` in shell commands; never overwrite PATH or fall back
+to a legacy board when the new node is unavailable.
+
 Use the installed `comms` CLI. Local communication works through the per-user
 node; Agent Monitor is an optional viewer. Choose the requested alias, otherwise
 use a short project name. Preserve explicit `--persistent` and `--global` choices.
@@ -26,7 +31,7 @@ different live session merely to obtain a preferred name.
 Monitor tool:
 
 ```text
-Monitor({command: "comms stream ALIAS", persistent: true,
+Monitor({command: "\"${COMMS_BIN:-comms}\" stream ALIAS", persistent: true,
          description: "Peer comms for ALIAS"})
 ```
 
@@ -36,8 +41,12 @@ If this harness has no Monitor tool, report that receiving cannot be armed here;
 do not claim an external stream makes the model reachable. Receivers reconnect
 after node restarts without creating another identity. Avoid duplicate receivers.
 
-**Codex:** use the installed app-server integration that delivers tool output into
-the actual thread. `comms open` requires its supported target (`--target` or
+**Codex:** launch or explicitly resume through `comms codex` first. The launcher
+keeps the app-server independent of the node/GUI and supplies the exact target,
+TUI process identity, and executable path to tool shells. After `comms open`,
+the node starts the native tool-output receiver automatically; do not start a
+plain stdout receiver for Codex. Use the installed app-server integration that
+delivers tool output into the actual thread. `comms open` requires its supported target (`--target` or
 `COMMS_CODEX_TARGET`). If that receiver isn't configured, report the actionable
 setup error. Never substitute typing a message into the terminal as user input.
 

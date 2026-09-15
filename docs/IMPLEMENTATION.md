@@ -48,6 +48,8 @@ Legacy code and history stay separate; no destructive legacy cutover is needed.
 - Strict authenticated metadata comparison, nonce randomness, immutable message IDs,
   expiry enforcement, duplicate collision checks and monotonic receipt transitions.
 - Authenticated private history tunnel using bounded in-memory request correlation.
+- Dedicated read-only history/stat connections with query budgets protect the
+  queue writer from slow viewer work. Both handles still use the same node.db.
 - Short SQLite WAL/FULL transactions; acknowledgment only after durable receipt and
   durable receipt obligation. No network/handoff inside a database transaction.
 - A message-level `receipt_pending` flag durably preserves receipt obligations
