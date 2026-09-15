@@ -32,7 +32,7 @@ Unchecked final gates remain open.
       brain restart resumes same ID/inbox and functionality.
 - [x] Pi memory/idle CPU measured against initial <128MiB/<1%-one-core targets.
 - [x] Agent Monitor PR exists and references released version and verification evidence.
-- [ ] After every completion gate passes, ask the Pi Claude agent to send João a
+- [x] After every completion gate passes, ask the Pi Claude agent to send João a
       completion push through jsplayground; verify the actual push result before
       reporting the goal complete. Do not send this notification early.
 
@@ -76,10 +76,14 @@ Additional final gates:
   `msg_final_claude_v011` → `msg_1c6865f3fb03606fa7b037e589dbf85d`
   (**CLAUDE_FINAL_V011**). All four durable states are `handed_off`.
 - Brain remains persistent `a_f45edf2c4849fa3c9d0aff6446c3ca99`.
-  Node, brain and legacy services are active; legacy public `/who` returned200.
-- Final Pi quiet30-second sample: **19.09 MiB RSS, 0.500% of one core**.
+  Node, brain and legacy services are active; legacy public `/who` returned 200.
+- Final Pi quiet 30-second sample: **19.09 MiB RSS, 0.500% of one core**.
 - Agent Monitor PR16 is ready, unmerged, head `33b4c15`; CI run `34972617606`
   passed. Exact uploaded v0.1.1 pins, full bundled app build, signature verification,
   actual final-binary viewer queries and installer/integrity regressions passed.
-- The final notification is the only pending gate; readiness was confirmed by
-  Pi Claude without sending a push early.
+- Final notification completed at 2026-09-15 13:08:33 UTC. Pi Claude sent exactly
+  one push through pager.jsplayground.cc; its response and an independent
+  read-only database check agree: push `7b9463c9-9563-4cf6-918e-677f8561781b`,
+  `delivered=1`, `provider_status=ok`. APNs ID:
+  `51679ce3-dd8b-4203-9766-f5c8f02db814`. This proves provider acceptance, not that
+  the user has read the notification.

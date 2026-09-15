@@ -2,13 +2,16 @@
 
 **Software delivery verified: v0.1.1 runs on both Mac and Pi.** Final real brain
 and Pi Claude round trips pass, and Agent Monitor PR16 is ready for review.
-The completion push remains pending; the goal is active until its submission.
+The Pi Claude agent sent the completion push at **13:08:33 UTC**. Its response
+and an independent database check confirm one push,
+`7b9463c9-9563-4cf6-918e-677f8561781b`, delivered=1 and provider_status=ok.
+All required delivery and notification gates are complete.
 
 ## Final release
 
 - Release: https://github.com/joaohts/comms/releases/tag/v0.1.1
 - Commit: `e25e8ea1a7292ed4848a22b12745d6594c3a84ad`.
-- Release34972108320 and CI34972108279 passed; actual uploaded hashes:
+- Release 34972108320 and CI 34972108279 passed; actual uploaded hashes:
 
 | Archive | SHA256 |
 |---|---|
@@ -23,12 +26,12 @@ already identical; no extra brain restart was needed for the packaging patch.
 Final request/reply IDs and CI evidence are in [VERIFICATION.md](VERIFICATION.md).
 Brain returned **BRAIN_FINAL_V011** and the fresh Pi Claude returned
 **CLAUDE_FINAL_V011**, with both directions durably handed off. Brain is still
-persistent under its original new-node ID. Legacy public `/who` returned200.
-The final Pi sample measured **19.09 MiB RSS / 0.500% of one core over30 seconds**.
+persistent under its original new-node ID. Legacy public `/who` returned 200.
+The final Pi sample measured **19.09 MiB RSS / 0.500% of one core over 30 seconds**.
 
 [Agent Monitor PR16](https://github.com/joaohts/agent-monitor/pull/16) is ready,
 unmerged, and pins this release. Full bundled build, codesign verification,
-actual viewer-client queries and final macOS CI34972617606 passed. The user's
+actual viewer-client queries and final macOS CI 34972617606 passed. The user's
 original dirty AgentMonitor.swift remains untouched.
 
 ## Earlier rollout checkpoints — historical
