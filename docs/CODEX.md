@@ -36,6 +36,11 @@ codex resume <uuid>`. Arguments after `codex` belong to Codex and are preserved,
 including configuration overrides and prompts. The launcher owns `--remote`;
 use Codex directly for a different remote endpoint.
 
+New sessions and resumes use the directory where `comms codex` is invoked.
+The launcher passes it explicitly to Codex so reusing the shared app-server does
+not select the server's data directory. An explicit `-C` or `--cd` argument
+overrides this default.
+
 The on-demand app-server uses `<data-dir>/codex/control.sock`, a startup lock,
 and a private PID/start-identity record. Concurrent launches reuse one server.
 A stale socket is removed only when its recorded owner is confirmed ended and
@@ -156,7 +161,7 @@ compression and HTTP proxies are disabled; all socket traffic remains local.
 
 ## Verified behavior
 
-Live tests on macOS, Codex CLI **0.154.0**, 2026-09-15:
+Live tests on macOS, Codex CLI **0.154.0**, 2026-09-15–16:
 
 | Test | Observed result |
 |---|---|
@@ -172,6 +177,7 @@ Live tests on macOS, Codex CLI **0.154.0**, 2026-09-15:
 | Node restart | The same stored agent and attachment resumed native delivery automatically after restarting the node; a second marker produced a fresh reply |
 | Compiled launcher | A new real TUI launched through `comms codex`, ran `$COMMS_BIN open` itself, and received a CLI-posted marker as native peer output |
 | Compiled launcher exit/resume | Closing that TUI retired its ephemeral comms identity while app-server survived; `comms codex resume` reused the server and saved Codex thread, refreshed the TUI PID, created a fresh default comms identity, and received another native marker |
+| Launcher working directory | A fresh TUI and an explicit resume from another directory each ran `pwd` in the invoking directory while reusing one app-server; shell commands required no model generation |
 
 The adapter has protocol tests for private socket validation, inactive/mismatched
 threads, active and idle handoff, malformed replies, overload, lost replies,
