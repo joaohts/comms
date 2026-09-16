@@ -72,11 +72,9 @@ func (a *app) serveChannel(ctx context.Context, transport mcp.Transport) error {
 		defer ch.mu.Unlock()
 		ch.stop()
 	}()
-	session, err := server.Connect(ctx, ch.transport, nil)
-	if err != nil {
-		return err
-	}
-	return session.Wait()
+	// Run closes the MCP transport when SIGINT/SIGTERM cancel ctx. Waiting
+	// on a manually connected session alone leaves an open stdin blocking exit.
+	return server.Run(ctx, ch.transport)
 }
 
 type channelOpenInput struct {

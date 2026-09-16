@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,45 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestClaudeChannelCancellationClosesOpenTransport(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := &app{out: io.Discard, errOut: io.Discard, getenv: func(key string) string {
+		if key == "CLAUDE_CODE_SESSION_ID" {
+			return "signal-test"
+		}
+		return ""
+	}}
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	done := make(chan error, 1)
+	go func() { done <- a.serveChannel(ctx, serverTransport) }()
+	clientCtx, stop := context.WithTimeout(context.Background(), 3*time.Second)
+	defer stop()
+	conn, err := clientTransport.Connect(clientCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	id, _ := jsonrpc.MakeID(float64(1))
+	params := json.RawMessage(`{"protocolVersion":"2025-11-25","clientInfo":{"name":"signal-test","version":"1"},"capabilities":{}}`)
+	if err := conn.Write(clientCtx, &jsonrpc.Request{ID: id, Method: "initialize", Params: params}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Read(clientCtx); err != nil {
+		t.Fatal(err)
+	}
+	// Keep the client's pipe open, as Claude does while stopping an MCP child.
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("shutdown error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled channel waited for the client to close stdin")
+	}
+}
 
 type channelWire struct {
 	t             *testing.T
