@@ -97,6 +97,9 @@ func NewBroker(cfg Config) (*Broker, error) {
 	if cfg.DataDir == "" {
 		cfg.DataDir = defaults.DataDir
 	}
+	if err := loadServiceKey(&cfg); err != nil {
+		return nil, err
+	}
 	if cfg.Lease <= 0 {
 		cfg.Lease = defaults.Lease
 	}
@@ -197,7 +200,7 @@ func (b *Broker) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/stream", b.auth(b.stream))
 	mux.HandleFunc("POST /v1/history/{machine}", b.auth(b.history))
 	mux.HandleFunc("POST /v1/history-results/{id}", b.auth(b.historyResult))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return b.serviceKeyGate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
 		if b.closed {
 			b.mu.Unlock()
@@ -225,7 +228,7 @@ func (b *Broker) Handler() http.Handler {
 			}
 		}
 		mux.ServeHTTP(w, r)
-	})
+	}))
 }
 
 func brokerJSON(w http.ResponseWriter, status int, v any) {

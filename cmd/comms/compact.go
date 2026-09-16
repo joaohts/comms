@@ -53,7 +53,7 @@ func (a *app) compactList(kind string, raw json.RawMessage) error {
 			return a.output(compactOutcome(m))
 		}
 		out := map[string]json.RawMessage{}
-		for _, key := range []string{"version", "api_version", "name", "machine_id", "broker_enabled", "broker_connected"} {
+		for _, key := range []string{"version", "api_version", "name", "machine_id", "broker_enabled", "broker_connected", "broker_service_key_configured"} {
 			if value, ok := fields[key]; ok {
 				out[key] = value
 			}

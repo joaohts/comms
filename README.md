@@ -94,6 +94,10 @@ comms log pi:brain
 ```
 
 The reverse direction requires a separate grant. Pairing alone grants nothing.
+An operator may also require a shared service API key, including for registration.
+Configure its private file on both broker and consumer nodes with the installer's
+`--broker-service-key-file PATH`; updates preserve it. This additional gate does
+not replace machine-key verification or grants. See [deployment](deploy/README.md).
 Receipts are correlated protocol statuses and do not need a reverse messaging
 grant. Remote history requires its own permission and excludes same-machine
 traffic. Human/operator history queries can use `--operator` without claiming an

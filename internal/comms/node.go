@@ -79,6 +79,9 @@ func NewNode(cfg Config) (*Node, error) {
 		return nil, absErr
 	}
 	cfg.DataDir = abs
+	if err := loadServiceKey(&cfg); err != nil {
+		return nil, err
+	}
 	if cfg.Heartbeat <= 0 || cfg.Lease < cfg.Heartbeat || cfg.Drain < 0 || cfg.LocalCount < 1 || cfg.LocalBytes < 1 || cfg.ReceiptCount < 1 || cfg.ReceiptBytes < 1 {
 		return nil, fmt.Errorf("invalid heartbeat, lease, drain or queue configuration")
 	}
@@ -104,7 +107,7 @@ func NewNode(cfg Config) (*Node, error) {
 		f.Close()
 		return nil, e
 	}
-	n := &Node{Store: s, cfg: cfg, lock: f, wake: make(chan struct{}, 1), outWake: make(chan struct{}, 1), syncWake: make(chan struct{}, 1), jobs: make(chan Message, cfg.Workers), receivers: map[string]*receiver{}, busy: map[string]bool{}, waits: map[string]*handoffWait{}, observers: map[chan Event]struct{}{}, querySlots: make(chan struct{}, 2), httpClient: &http.Client{Timeout: 15 * time.Second}}
+	n := &Node{Store: s, cfg: cfg, lock: f, wake: make(chan struct{}, 1), outWake: make(chan struct{}, 1), syncWake: make(chan struct{}, 1), jobs: make(chan Message, cfg.Workers), receivers: map[string]*receiver{}, busy: map[string]bool{}, waits: map[string]*handoffWait{}, observers: map[chan Event]struct{}{}, querySlots: make(chan struct{}, 2), httpClient: &http.Client{Timeout: 15 * time.Second, CheckRedirect: noBrokerRedirect}}
 	n.brokerURL = s.Setting("broker_url")
 	if s.Setting("name") == "" {
 		name, _ := os.Hostname()
@@ -158,6 +161,8 @@ func (n *Node) Start(parent context.Context) error {
 				return e
 			}
 			proxy := httputil.NewSingleHostReverseProxy(u)
+			director := proxy.Director
+			proxy.Director = func(r *http.Request) { director(r); r.Header.Del(ServiceKeyHeader) }
 			proxy.FlushInterval = -1
 			primary := handler
 			handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -167,6 +172,7 @@ func (n *Node) Start(parent context.Context) error {
 					proxy.ServeHTTP(w, r)
 				}
 			})
+			handler = n.broker.serviceKeyGate(handler)
 		}
 		n.brokerServer = &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 		go func() {
@@ -304,7 +310,7 @@ func nodeDecode(w http.ResponseWriter, r *http.Request, out any) error {
 func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
-		nodeJSON(w, 200, map[string]any{"version": Version, "api_version": ProtocolVersion, "machine_id": n.Store.Identity.MachineID, "public_key": n.Store.Identity.PublicKey, "identity": n.Store.Identity, "name": n.Store.Setting("name"), "broker_enabled": n.broker != nil, "broker_connected": n.brokerOnline.Load(), "broker_url": n.Store.Setting("broker_url"), "data_dir": n.cfg.DataDir})
+		nodeJSON(w, 200, map[string]any{"version": Version, "api_version": ProtocolVersion, "machine_id": n.Store.Identity.MachineID, "public_key": n.Store.Identity.PublicKey, "identity": n.Store.Identity, "name": n.Store.Setting("name"), "broker_enabled": n.broker != nil, "broker_connected": n.brokerOnline.Load(), "broker_service_key_configured": n.cfg.BrokerServiceKey != "", "broker_url": n.Store.Setting("broker_url"), "data_dir": n.cfg.DataDir})
 	})
 	mux.HandleFunc("PUT /v1/name", func(w http.ResponseWriter, r *http.Request) {
 		var q struct {

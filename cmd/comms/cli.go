@@ -759,6 +759,7 @@ func (a *app) retire(ctx context.Context, args []string) error {
 func (a *app) serve(ctx context.Context, cfg comms.Config, args []string) error {
 	f := flags("serve")
 	f.StringVar(&cfg.BrokerListen, "broker-listen", "", "")
+	f.StringVar(&cfg.BrokerServiceKeyFile, "broker-service-key-file", cfg.BrokerServiceKeyFile, "private shared broker API key file")
 	f.StringVar(&cfg.LegacyURL, "legacy-proxy-url", "", "")
 	f.IntVar(&cfg.Workers, "workers", cfg.Workers, "")
 	f.DurationVar(&cfg.Heartbeat, "heartbeat", cfg.Heartbeat, "")

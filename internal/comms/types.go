@@ -23,20 +23,22 @@ const MaxWire = 768 << 10
 const MaxHistory = 1 << 20
 
 type Config struct {
-	DataDir       string
-	BrokerListen  string
-	LegacyURL     string
-	Workers       int
-	Heartbeat     time.Duration
-	Lease         time.Duration
-	Drain         time.Duration
-	LocalCount    int
-	LocalBytes    int64
-	BrokerCount   int
-	BrokerBytes   int64
-	ReceiptCount  int
-	ReceiptBytes  int64
-	AllowInsecure bool
+	DataDir              string
+	BrokerListen         string
+	LegacyURL            string
+	Workers              int
+	Heartbeat            time.Duration
+	Lease                time.Duration
+	Drain                time.Duration
+	LocalCount           int
+	LocalBytes           int64
+	BrokerCount          int
+	BrokerBytes          int64
+	ReceiptCount         int
+	ReceiptBytes         int64
+	AllowInsecure        bool
+	BrokerServiceKey     string `json:"-"`
+	BrokerServiceKeyFile string `json:"-"`
 }
 
 func DefaultConfig() Config {
@@ -45,7 +47,7 @@ func DefaultConfig() Config {
 		h, _ := os.UserHomeDir()
 		d = filepath.Join(h, ".local", "share", "comms")
 	}
-	return Config{DataDir: d, Workers: 4, Heartbeat: 15 * time.Second, Lease: 60 * time.Second,
+	return Config{DataDir: d, BrokerServiceKeyFile: os.Getenv("COMMS_BROKER_SERVICE_KEY_FILE"), Workers: 4, Heartbeat: 15 * time.Second, Lease: 60 * time.Second,
 		Drain: 10 * time.Second, LocalCount: 1000, LocalBytes: 32 << 20,
 		BrokerCount: 10000, BrokerBytes: 256 << 20, ReceiptCount: 2048, ReceiptBytes: 8 << 20}
 }

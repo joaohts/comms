@@ -21,5 +21,6 @@ jobs:
       - run: python3 scripts/test_installed_skill.py
       - run: python3 scripts/test_codex_alias.py
       - run: python3 scripts/test_launchd_upgrade.py
+      - run: python3 scripts/test_service_key_install.py
       - run: bash -n scripts/install.sh scripts/release.sh
       - run: scripts/release.sh 0.0.0-ci

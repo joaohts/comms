@@ -15,6 +15,8 @@ broker_listen=""
 broker_explicit=0
 legacy_proxy=""
 legacy_explicit=0
+service_key_file=""
+service_key_explicit=0
 allow_insecure=0
 start=1
 service=1
@@ -83,6 +85,7 @@ Usage: scripts/install.sh [options]
   --data-dir PATH       Persistent identity and databases
   --broker-listen ADDR  Enable broker role on this address
   --legacy-proxy-url URL Forward non-/v1 HTTP paths to legacy broker
+  --broker-service-key-file PATH  Private shared broker API key (server and client)
   --allow-insecure      Allow HTTP broker URLs for trusted local testing
   --replace-legacy      Explicitly back up and replace legacy CLI/skill files
   --skip-skills         Do not install open-comms integrations or shell alias
@@ -94,13 +97,14 @@ EOF
 
 while (($#)); do
   case "$1" in
-    --binary|--bin-dir|--binary-name|--data-dir|--broker-listen|--legacy-proxy-url)
+    --binary|--bin-dir|--binary-name|--data-dir|--broker-listen|--legacy-proxy-url|--broker-service-key-file)
       (($# >= 2)) || { usage >&2; exit 2; }
       case "$1" in
         --binary) binary=$2; custom_binary=1 ;; --bin-dir) bin_dir=$2 ;; --binary-name) binary_name=$2 ;;
         --data-dir) data_dir=$2; data_explicit=1 ;;
         --broker-listen) broker_listen=$2; broker_explicit=1 ;;
         --legacy-proxy-url) legacy_proxy=$2; legacy_explicit=1 ;;
+        --broker-service-key-file) service_key_file=$2; service_key_explicit=1 ;;
       esac; shift 2 ;;
     --allow-insecure) allow_insecure=1; shift ;;
     --replace-legacy) replace_legacy=1; shift ;;
@@ -114,7 +118,7 @@ while (($#)); do
 done
 
 case "$binary_name" in *[!A-Za-z0-9._-]*|'') printf 'Invalid binary name\n' >&2; exit 2 ;; esac
-case "$data_dir$bin_dir$binary$broker_listen$legacy_proxy" in *$'\n'*) printf 'Paths/settings must not contain newlines\n' >&2; exit 2 ;; esac
+case "$data_dir$bin_dir$binary$broker_listen$legacy_proxy$service_key_file" in *$'\n'*) printf 'Paths/settings must not contain newlines\n' >&2; exit 2 ;; esac
 test -x "$binary" || { printf 'Executable not found: %s\n' "$binary" >&2; exit 1; }
 if (( custom_binary == 0 )); then
   python3 - "$bundle_dir" <<'PY'
@@ -139,7 +143,7 @@ elif unit.is_file():
     for line in unit.read_text().splitlines():
         if line.startswith('ExecStart='): args=shlex.split(line.partition('=')[2]); break
 def value(flag): return args[args.index(flag)+1].replace('%%','%') if flag in args else ''
-print(json.dumps({'data_dir':value('--data-dir'),'broker_listen':value('--broker-listen'),'legacy_proxy':value('--legacy-proxy-url'),'allow_insecure':'--allow-insecure' in args}))
+print(json.dumps({'data_dir':value('--data-dir'),'broker_listen':value('--broker-listen'),'legacy_proxy':value('--legacy-proxy-url'),'service_key_file':value('--broker-service-key-file'),'allow_insecure':'--allow-insecure' in args}))
 PY
 )
   existing_data=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["data_dir"])' <<< "$existing_config")
@@ -156,8 +160,25 @@ PY
   if (( legacy_explicit == 0 )); then
     legacy_proxy=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["legacy_proxy"])' <<< "$existing_config")
   fi
+  if (( service_key_explicit == 0 )); then
+    service_key_file=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["service_key_file"])' <<< "$existing_config")
+  fi
   existing_insecure=$(python3 -c 'import json,sys;print(int(json.load(sys.stdin)["allow_insecure"]))' <<< "$existing_config")
   if (( existing_insecure )); then allow_insecure=1; fi
+fi
+if [[ -n "$service_key_file" ]]; then
+  python3 - "$service_key_file" <<'PY'
+# BEGIN COMMS_SERVICE_KEY_PREFLIGHT
+import pathlib,sys
+try:
+    p=pathlib.Path(sys.argv[1]); info=p.stat()
+    assert p.is_file() and info.st_mode & 0o077 == 0 and info.st_size <= 4096
+    key=p.read_text(encoding='ascii').strip(' \t\r\n\v\f')
+    assert 32 <= len(key) <= 4096 and all(33 <= ord(c) <= 126 for c in key)
+except (OSError,UnicodeError,AssertionError):
+    raise SystemExit('Invalid broker service key file: require a private regular file (0600) containing 32-4096 printable non-space ASCII characters.')
+# END COMMS_SERVICE_KEY_PREFLIGHT
+PY
 fi
 umask 077
 mkdir -p "$bin_dir" "$data_dir"
@@ -270,6 +291,7 @@ PYALIAS
 fi
 
 args=(serve --data-dir "$data_dir")
+[[ -z "$service_key_file" ]] || args+=(--broker-service-key-file "$service_key_file")
 [[ -z "$broker_listen" ]] || args+=(--broker-listen "$broker_listen")
 [[ -z "$legacy_proxy" ]] || args+=(--legacy-proxy-url "$legacy_proxy")
 (( allow_insecure == 0 )) || args+=(--allow-insecure)

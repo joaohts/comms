@@ -91,6 +91,12 @@ and `next_cursor`; inspection still never acknowledges messages.
 
 ## Closing and administration
 
+A broker can additionally require a shared service API key. A `service_key_required`
+error means the local node needs the operator's private key file configured with
+`--broker-service-key-file` and a node restart. Public identity exports and machine
+grants do not supply this key. Never paste its value into comms messages, the vault,
+or tool output, and never bypass the gate by falling back to another broker.
+
 `comms close [ALIAS]` ends the current attachment. A receiver losing its connection
 does not authorize closing another session or taking its identity. Report a
 receiver failure without claiming that the harness itself ended.

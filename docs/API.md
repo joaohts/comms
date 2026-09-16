@@ -85,6 +85,26 @@ Sender identity/scope is taken from the attached session, not arbitrary `from` d
 
 ## Broker routes
 
+An operator may require a shared service API key on **every** broker request,
+including registration and streams. It is sent in `X-Comms-Service-Key` alongside
+the existing machine `Authorization: Bearer ...` credential. A missing/wrong key
+returns401 `service_key_required` before request parsing or registration. This
+extra gate does not replace proof of machine-key possession, grants, or encryption.
+
+Configure both server and consumer nodes with `serve --broker-service-key-file
+/private/path` (or `COMMS_BROKER_SERVICE_KEY_FILE`). The installer accepts and
+preserves the same option. The file must be private (0600), regular, and contain
+32–4096 printable non-space ASCII characters; a trailing newline is accepted.
+An explicit unreadable/missing/empty file fails startup rather than opening the
+broker. With no option or environment setting, the service-key feature is off.
+Restart the node to apply or rotate this service key; this is independent of
+machine identity keys. Broker clients refuse HTTP redirects to avoid forwarding
+credentials elsewhere. Legacy proxy forwarding is also gated and strips this
+header before contacting the old server.
+
+Local status exposes only `broker_service_key_configured`, never the key value.
+Exchange the service key privately, **not** in public identity bundles or the vault.
+
 | Route | Purpose |
 |---|---|
 | POST /v1/auth/challenges | Start self-service identity registration/auth |

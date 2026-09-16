@@ -101,6 +101,26 @@ its own Monitor tool; a service-owned stream cannot wake another model.
 
 ## Updating and rollback
 
+### Optional broker service API key
+
+Use a separate, randomly generated shared API key to restrict access to an
+instance, including new-machine registration. Save it in a private file on the
+broker and each authorized consumer node; distribute it through a private channel.
+Do not put it in a URL, command-line value, repository, vault, or public export.
+
+```sh
+chmod 600 "$HOME/.local/share/comms/broker-service-key"
+./scripts/install.sh --broker-service-key-file "$HOME/.local/share/comms/broker-service-key"
+```
+
+The installer records the file path in the supervisor and preserves it on later
+updates. The process reads the file at startup. Missing or invalid explicitly
+configured files fail closed. Without configuration, this extra gate is optional.
+`comms status --compact` reports only whether a service key is configured.
+Machine key verification, authentication and directional grants remain required.
+
+### Node updates
+
 Install the selected release using the same data directory. Upgrades preserve the
 machine identity, keys, inboxes, and persistent agent IDs. The supervisor stops
 the old node with a 15-second outer deadline; the node drains for its configured

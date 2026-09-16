@@ -80,6 +80,9 @@ func (n *Node) rawRequest(ctx context.Context, base, token, method, path string,
 		return e
 	}
 	req.Header.Set("User-Agent", "comms/"+Version)
+	if n.cfg.BrokerServiceKey != "" {
+		req.Header.Set(ServiceKeyHeader, n.cfg.BrokerServiceKey)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -286,7 +289,10 @@ func (n *Node) readBrokerStream(ctx context.Context) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", "comms/"+Version)
-	client := &http.Client{Transport: n.httpClient.Transport}
+	if n.cfg.BrokerServiceKey != "" {
+		req.Header.Set(ServiceKeyHeader, n.cfg.BrokerServiceKey)
+	}
+	client := &http.Client{Transport: n.httpClient.Transport, CheckRedirect: noBrokerRedirect}
 	res, e := client.Do(req)
 	if e != nil {
 		return e
