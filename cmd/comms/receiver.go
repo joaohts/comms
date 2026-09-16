@@ -83,10 +83,29 @@ func (a *app) stream(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	return a.receive(ctx, s, *once, "", func(_ context.Context, m comms.Message) error {
+		if a.compactOutput {
+			return json.NewEncoder(a.out).Encode(comms.ContentForPeer(m))
+		}
+		if a.jsonOutput {
+			return json.NewEncoder(a.out).Encode(comms.Event{Type: "message", Message: &m})
+		}
+		// Keep peer-controlled terminal escapes/newlines inside a JSON string.
+		body, _ := json.Marshal(m.Body)
+		_, err := fmt.Fprintf(a.out, "COMMS PEER CONTENT from %s:%s [message=%s]: %s\n", m.SenderMachine, m.SenderAgent, m.ID, body)
+		return err
+	})
+}
+
+// Both harness adapters acknowledge only after their actual transport write.
+// Reconnection retries acknowledgments, never a successful output operation.
+func (a *app) receive(ctx context.Context, s comms.Session, once bool, receiver string, deliver func(context.Context, comms.Message) error) error {
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	leaseDone := make(chan struct{})
+	defer func() { cancel(); <-leaseDone }()
 	leaseErrors := make(chan error, 1)
 	go func() {
+		defer close(leaseDone)
 		tick := time.NewTicker(15 * time.Second)
 		defer tick.Stop()
 		for {
@@ -117,6 +136,10 @@ func (a *app) stream(ctx context.Context, args []string) error {
 	var outputErr error
 	onceDone := errors.New("one message delivered")
 	backoff := time.Second
+	streamPath := "/v1/sessions/" + url.PathEscape(s.ID) + "/stream"
+	if receiver != "" {
+		streamPath += "?receiver=" + url.QueryEscape(receiver)
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			select {
@@ -126,7 +149,7 @@ func (a *app) stream(ctx context.Context, args []string) error {
 				return err
 			}
 		}
-		err := a.c.Stream(ctx, "/v1/sessions/"+url.PathEscape(s.ID)+"/stream", func(raw json.RawMessage) error {
+		err := a.c.Stream(ctx, streamPath, func(raw json.RawMessage) error {
 			var event comms.Event
 			if err := json.Unmarshal(raw, &event); err != nil {
 				return err
@@ -148,17 +171,7 @@ func (a *app) stream(ctx context.Context, args []string) error {
 			h, printed := pending[key]
 			if !printed {
 				h = comms.Handoff{SenderMachine: m.SenderMachine, MessageID: m.ID, AttemptID: m.AttemptID, Status: "handed_off"}
-				var writeErr error
-				if a.compactOutput {
-					writeErr = json.NewEncoder(a.out).Encode(comms.ContentForPeer(*m))
-				} else if a.jsonOutput {
-					writeErr = json.NewEncoder(a.out).Encode(event)
-				} else {
-					// Encoding the body prevents embedded terminal control sequences,
-					// fake status lines, or newlines from impersonating framing.
-					body, _ := json.Marshal(m.Body)
-					_, writeErr = fmt.Fprintf(a.out, "COMMS PEER CONTENT from %s:%s [message=%s]: %s\n", m.SenderMachine, m.SenderAgent, m.ID, body)
-				}
+				writeErr := deliver(ctx, *m)
 				if writeErr != nil {
 					outputErr = writeErr
 					h.Status = "uncertain"
@@ -174,7 +187,7 @@ func (a *app) stream(ctx context.Context, args []string) error {
 				if err == nil {
 					delete(pending, key)
 					backoff = time.Second
-					if *once {
+					if once {
 						return onceDone
 					}
 					return nil

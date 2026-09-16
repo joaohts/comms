@@ -22,6 +22,7 @@ start=1
 service=1
 skills=1
 codex_alias=1
+claude_alias=1
 replace_legacy=0
 skill_backup_root="${XDG_STATE_HOME:-$HOME/.local/state}/comms/skill-backups"
 
@@ -90,6 +91,7 @@ Usage: scripts/install.sh [options]
   --replace-legacy      Explicitly back up and replace legacy CLI/skill files
   --skip-skills         Do not install open-comms integrations or shell alias
   --skip-codex-alias     Do not configure the Codex shell shortcut
+  --skip-claude-alias    Do not configure the Claude shell shortcut
   --no-service          Install files without registering a supervisor
   --no-start            Register service but do not start/restart it
 EOF
@@ -110,6 +112,7 @@ while (($#)); do
     --replace-legacy) replace_legacy=1; shift ;;
     --skip-skills) skills=0; shift ;;
     --skip-codex-alias) codex_alias=0; shift ;;
+    --skip-claude-alias) claude_alias=0; shift ;;
     --no-service) service=0; start=0; shift ;;
     --no-start) start=0; shift ;;
     --help|-h) usage; exit 0 ;;
@@ -286,6 +289,10 @@ if shell == 'bash':
     print('Bash login shells must source ~/.bashrc to load the shortcut.')
 # END COMMS_CODEX_ALIAS
 PYALIAS
+fi
+
+if (( skills && claude_alias )); then
+  python3 "$bundle_dir/integration/claude-alias.py" "$target"
 fi
 
 args=(serve --data-dir "$data_dir")

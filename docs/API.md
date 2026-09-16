@@ -123,6 +123,20 @@ Only `message` and `receipt` are durable envelope kinds. History is a bounded
 in-memory HTTP query/response relay, never broker history or an agent inbox entry.
 The broker authenticates its caller and cannot claim another sender in request JSON.
 
+## Claude receiver preference
+
+`GET /v1/claude` returns `{"receiver":"monitor"}` or `{"receiver":"channel"}`.
+`PUT /v1/claude` stores that object in the existing settings table. Unset means
+`monitor`; invalid values return 400 and do not change the preference. No schema
+migration is needed. `GET /v1/status` also includes `claude_receiver`.
+The preference applies to future `comms claude` launches, without mutating
+existing attachments.
+
+A Claude Monitor attachment has an empty `delivery_target`. An MCP channel
+attachment uses `claude-channel` and connects to its ordinary stream endpoint
+with `?receiver=channel`. The node refuses a mismatched receiver with 409.
+Handoff receipts retain the existing semantics for both adapters.
+
 ## Agent Monitor integration
 
 CLI `status`, `who`, `identities`, `events` support `--json`; events are NDJSON.

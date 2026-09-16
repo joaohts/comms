@@ -19,6 +19,7 @@ jobs:
       - run: python3 -m unittest discover -s integration/voice -v
       - run: python3 scripts/test_installed_skill.py
       - run: python3 scripts/test_codex_alias.py
+      - run: python3 scripts/test_claude_alias.py
       - run: python3 scripts/test_launchd_upgrade.py
       - run: python3 scripts/test_service_key_install.py
       - name: Build platform archives and checksums

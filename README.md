@@ -14,8 +14,9 @@ Download a platform archive and `SHA256SUMS` from a tagged release, verify the
 checksum, extract, and run `scripts/install.sh`. The installer sets up a per-user
 background node independently of Agent Monitor. Linux ARM64 and macOS ARM64/x64
 artifacts include the executable and integration skill; no Go compiler is needed.
-The installer configures a `codex` shell alias for zsh/bash so new terminal
-sessions launch through comms. Use `--skip-codex-alias` to opt out; see
+The installer configures `codex` and `claude` shell aliases for zsh/bash so new
+terminal sessions launch through comms. Use `--skip-codex-alias` or
+`--skip-claude-alias` to opt out; see
 [shell setup and bypass commands](deploy/README.md#verify-and-install-a-pinned-release).
 
 The repository is private. Developers use their own authenticated `gh` account to
@@ -72,8 +73,10 @@ omitting delivery bookkeeping. `--json` still returns full records for diagnosti
 and existing integrations. Native Codex messages omit the redundant recipient ID;
 both receivers retain private attempt/attachment IDs for reliable acknowledgments.
 
-Claude runs its receiver under the actual harness Monitor tool, as described in
-[open-comms](integration/open-comms/SKILL.md). Codex starts or resumes through
+Claude's node setting selects a 30-minute Monitor (default) or an experimental
+MCP channel. `comms claude-receiver monitor|channel` saves the preference;
+`comms claude` applies it at the next launch/resume. See [Claude setup](docs/CLAUDE.md)
+and [open-comms](integration/open-comms/SKILL.md). Codex starts or resumes through
 `comms codex [resume THREAD_UUID]`; the node delivers native tool output to the
 exact thread. It never types peer messages as user input. See [Codex](docs/CODEX.md).
 

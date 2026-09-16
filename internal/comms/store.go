@@ -344,6 +344,9 @@ func (s *Store) OpenAgent(r OpenRequest) (OpenResponse, error) {
 	if r.Harness != "claude" && r.Harness != "codex" && r.Harness != "service" {
 		return out, problem(400, "bad_harness", "unsupported harness")
 	}
+	if r.Harness == "claude" && r.Target != "" && r.Target != ClaudeChannelTarget {
+		return out, problem(400, "bad_claude_receiver", "Claude delivery target must be empty (Monitor) or claude-channel")
+	}
 	if r.HarnessID == "" {
 		return out, problem(400, "missing_session", "harness_session_id is required")
 	}

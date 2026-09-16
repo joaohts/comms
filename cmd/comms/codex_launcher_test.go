@@ -100,10 +100,11 @@ func TestCodexLauncherHelperProcess(t *testing.T) {
 		os.Exit(0)
 	}
 	values := map[string]string{}
-	for _, key := range []string{"COMMS_HARNESS_PID", "COMMS_CODEX_TARGET", "COMMS_DATA_DIR", "COMMS_SOCKET", "COMMS_BIN", "COMMS_AGENT", "CODEX_THREAD_ID"} {
+	for _, key := range []string{"COMMS_HARNESS_PID", "COMMS_CODEX_TARGET", "COMMS_DATA_DIR", "COMMS_SOCKET", "COMMS_BIN", "COMMS_AGENT", "CODEX_THREAD_ID", "COMMS_CLAUDE_RECEIVER"} {
 		values[key] = os.Getenv(key)
 	}
-	out, _ := json.Marshal(map[string]any{"pid": os.Getpid(), "args": args, "environment": values})
+	cwd, _ := os.Getwd()
+	out, _ := json.Marshal(map[string]any{"pid": os.Getpid(), "args": args, "environment": values, "cwd": cwd})
 	if err := os.WriteFile(os.Getenv("COMMS_LAUNCHER_TEST_CAPTURE"), out, 0600); err != nil {
 		fmt.Println(err)
 		os.Exit(1)

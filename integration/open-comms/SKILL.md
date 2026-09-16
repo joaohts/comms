@@ -8,6 +8,8 @@ description: Open this Claude or Codex session on the comms node, receive peer m
 Use the installed `comms` CLI. Local communication works through the per-user
 node; Agent Monitor is an optional viewer. Choose the requested alias, otherwise
 use a short project name. Preserve explicit `--persistent` and `--global` choices.
+Choose the receiver below before opening. Claude channel mode opens through
+its MCP tool; Monitor and Codex use the CLI:
 
 ```sh
 comms open ALIAS
@@ -22,14 +24,29 @@ different live session merely to obtain a preferred name.
 
 ## Receiving
 
-**Claude Code:** after opening, run the stream inside this session's actual
+**Claude Code:** `comms claude` uses the node's saved receiver setting. The
+launcher records this session's mode in `COMMS_CLAUDE_RECEIVER`; an unset value
+means the ordinary Monitor workflow. A node setting change applies on the next
+launch or resume.
+
+In `channel` mode, open with the `comms_open` MCP tool instead of the shell
+opener above, preserving the requested alias, `persistent`, and `global`
+choices. The MCP connection owns receiving for the session and reconnects to
+the node automatically. Use `comms_post`, `comms_who`, and `comms_close` or the
+CLI for sending, discovery, and closing. There is no Monitor to start or renew.
+If the channel tool is missing or Claude rejected the channel at startup,
+report the setup error; the operator can relaunch or select Monitor mode.
+
+In `monitor` mode, after opening, run the stream inside this session's actual
 Monitor tool:
 
 ```text
-Monitor({command: "comms stream ALIAS", persistent: true,
+Monitor({command: "comms stream ALIAS", timeout_ms: 1800000,
          description: "Peer comms for ALIAS"})
 ```
 
+Each Monitor lasts up to 30 minutes. After it exits, re-arm the same command
+without reopening or changing the identity. Keep only one receiver running.
 The stream must be owned by the harness. A detached shell, daemon, polling inbox,
 or stream started outside Claude does not provide the same idle wake-up behavior.
 If this harness has no Monitor tool, report that receiving cannot be armed here;

@@ -39,9 +39,9 @@ func (a *app) run(ctx context.Context, args []string) error {
 	// text that happens to contain a flag is never reinterpreted.
 	for i := 0; i < len(args); i++ {
 		v := args[i]
-		// Codex owns its argument syntax. Comms globals must precede this
-		// command; do not consume Codex flags or prompt text as comms options.
-		if v == "codex" && len(filtered) == 0 {
+		// Harness launchers own their argument syntax. Comms globals must
+		// precede them; prompt text must never become a comms option.
+		if (v == "codex" || v == "claude") && len(filtered) == 0 {
 			filtered = append(filtered, args[i:]...)
 			break
 		}
@@ -115,6 +115,15 @@ func (a *app) run(ctx context.Context, args []string) error {
 		return a.list(ctx, "/v1/agents", args, "agents")
 	case "sessions":
 		return a.list(ctx, "/v1/sessions", args, "sessions")
+	case "claude-receiver":
+		return a.claudeReceiver(ctx, args)
+	case "claude":
+		return a.claude(ctx, cfg, socket, args)
+	case "channel":
+		if err := a.noArgs(args); err != nil {
+			return err
+		}
+		return a.channel(ctx)
 	case "peers":
 		return a.list(ctx, "/v1/peers", args, "peers")
 	case "grants":
@@ -284,6 +293,27 @@ func (a *app) list(ctx context.Context, path string, args []string, kind string)
 }
 
 func (a *app) open(ctx context.Context, args []string) error {
+	if a.getenv("COMMS_CLAUDE_RECEIVER") == comms.ClaudeReceiverChannel && a.getenv("CLAUDE_CODE_SESSION_ID") != "" {
+		return &client.Error{Code: "channel_receiver", Message: "this Claude launch uses the MCP channel; open its identity with the comms_open MCP tool"}
+	}
+	out, err := a.openAttachment(ctx, args)
+	if err != nil {
+		return err
+	}
+	if a.compactOutput {
+		return a.output(map[string]any{"id": out.Agent.ID, "alias": out.Agent.Alias, "persistent": out.Agent.Persistent, "scope": out.Session.Scope})
+	}
+	if a.jsonOutput {
+		return a.output(out)
+	}
+	_, err = fmt.Fprintf(a.out, "%s: %s, scope=%s\n", out.Agent.Alias, map[bool]string{true: "persistent", false: "ephemeral"}[out.Agent.Persistent], out.Session.Scope)
+	if err == nil && out.Session.Harness == "claude" {
+		_, err = fmt.Fprintln(a.out, "Start comms stream "+out.Agent.Alias+" in this session's Monitor tool with timeout_ms: 1800000. Re-arm only after it exits.")
+	}
+	return err
+}
+
+func (a *app) openAttachment(ctx context.Context, args []string) (out comms.OpenResponse, err error) {
 	f := flags("open")
 	persistent := f.Bool("persistent", false, "")
 	global := f.Bool("global", false, "")
@@ -294,10 +324,10 @@ func (a *app) open(ctx context.Context, args []string) error {
 	pid := f.Int("process-id", 0, "")
 	started := f.String("process-started", "", "")
 	if err := parse(f, args); err != nil {
-		return err
+		return out, err
 	}
 	if f.NArg() != 1 {
-		return usageError("usage: comms open ALIAS [--persistent] [--global] [--harness claude|codex|service]")
+		return out, usageError("usage: comms open ALIAS [--persistent] [--global] [--harness claude|codex|service]")
 	}
 	if *harness == "" {
 		if a.getenv("CODEX_THREAD_ID") != "" {
@@ -319,28 +349,28 @@ func (a *app) open(ctx context.Context, args []string) error {
 		}
 	}
 	if *harnessID == "" {
-		return usageError("harness session ID is unavailable; supply --session-id with the actual Claude session or Codex thread ID")
+		return out, usageError("harness session ID is unavailable; supply --session-id with the actual Claude session or Codex thread ID")
 	}
 	if *harness == "codex" && *target == "" {
 		*target = a.getenv("COMMS_CODEX_TARGET")
 	}
 	if *harness == "codex" && *target == "" {
-		return &client.Error{Code: "receiver_setup_required", Message: "start this Codex session with comms codex, or explicitly resume it with comms codex resume THREAD, before opening comms; native tool-output delivery requires its local app-server target"}
+		return out, &client.Error{Code: "receiver_setup_required", Message: "start this Codex session with comms codex, or explicitly resume it with comms codex resume THREAD, before opening comms; native tool-output delivery requires its local app-server target"}
 	}
 	if *pid == 0 && a.getenv("COMMS_HARNESS_PID") != "" {
 		v, e := strconv.Atoi(a.getenv("COMMS_HARNESS_PID"))
 		if e != nil || v <= 0 {
-			return usageError("invalid COMMS_HARNESS_PID")
+			return out, usageError("invalid COMMS_HARNESS_PID")
 		}
 		*pid = v
 	}
 	if *harness == "codex" {
 		if *pid <= 0 {
-			return &client.Error{Code: "receiver_setup_required", Message: "Codex terminal ownership is missing: launch with comms codex (or comms codex resume THREAD), or supply the actual owning terminal --process-id; the shared app-server PID is not a terminal identity"}
+			return out, &client.Error{Code: "receiver_setup_required", Message: "Codex terminal ownership is missing: launch with comms codex (or comms codex resume THREAD), or supply the actual owning terminal --process-id; the shared app-server PID is not a terminal identity"}
 		}
 		actual := comms.ProcessStamp(*pid)
 		if actual == "" || (*started != "" && *started != actual) {
-			return &client.Error{Code: "receiver_setup_required", Message: "the selected Codex terminal process is unavailable or its start identity changed; resume with comms codex and reopen comms"}
+			return out, &client.Error{Code: "receiver_setup_required", Message: "the selected Codex terminal process is unavailable or its start identity changed; resume with comms codex and reopen comms"}
 		}
 		*started = actual
 	}
@@ -354,21 +384,8 @@ func (a *app) open(ctx context.Context, args []string) error {
 	if *global {
 		r.Scope = "global"
 	}
-	var out comms.OpenResponse
-	if err := a.c.Do(ctx, "POST", "/v1/sessions", r, &out); err != nil {
-		return err
-	}
-	if a.compactOutput {
-		return a.output(map[string]any{"id": out.Agent.ID, "alias": out.Agent.Alias, "persistent": out.Agent.Persistent, "scope": out.Session.Scope})
-	}
-	if a.jsonOutput {
-		return a.output(out)
-	}
-	_, err := fmt.Fprintf(a.out, "%s: %s, scope=%s\n", out.Agent.Alias, map[bool]string{true: "persistent", false: "ephemeral"}[out.Agent.Persistent], out.Session.Scope)
-	if err == nil && out.Session.Harness == "claude" {
-		_, err = fmt.Fprintln(a.out, "Start comms stream "+out.Agent.Alias+" in this session's Monitor tool to receive messages.")
-	}
-	return err
+	err = a.c.Do(ctx, "POST", "/v1/sessions", r, &out)
+	return out, err
 }
 
 func (a *app) session(ctx context.Context, ref string) (comms.Session, error) {
@@ -801,6 +818,9 @@ func (a *app) help() error {
 
   serve [--broker-listen HOST:PORT]      Run local node and optional broker
   codex [resume THREAD] [CODEX OPTIONS] Launch native tool-output Codex comms
+  claude [CLAUDE OPTIONS]              Launch Claude with the node's receiver mode
+  claude-receiver [monitor|channel]    Read or set Claude's mode for future launches
+  channel                             Claude MCP channel server (stdio)
   open ALIAS [--persistent] [--global]   Open or resume an agent identity
   close [ALIAS]                         End current attachment
   who | identities | agents | sessions Discover agents and attachments
