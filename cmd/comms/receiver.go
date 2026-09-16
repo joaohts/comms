@@ -149,7 +149,9 @@ func (a *app) stream(ctx context.Context, args []string) error {
 			if !printed {
 				h = comms.Handoff{SenderMachine: m.SenderMachine, MessageID: m.ID, AttemptID: m.AttemptID, Status: "handed_off"}
 				var writeErr error
-				if a.jsonOutput {
+				if a.compactOutput {
+					writeErr = json.NewEncoder(a.out).Encode(comms.ContentForPeer(*m))
+				} else if a.jsonOutput {
 					writeErr = json.NewEncoder(a.out).Encode(event)
 				} else {
 					// Encoding the body prevents embedded terminal control sequences,

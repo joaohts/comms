@@ -26,7 +26,7 @@ updating the viewer's pin is an explicit reviewed change, with no automatic
 download of a moving `latest` binary.
 
 ```sh
-gh release download v0.1.1 --repo joaohts/comms \
+gh release download v0.1.2 --repo joaohts/comms \
   --pattern comms_Linux_arm64.tar.gz --pattern SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
 tar -xzf comms_Linux_arm64.tar.gz
@@ -54,6 +54,19 @@ comms close
 The sender is inferred from its harness attachment. Services can use an explicit
 `--from ALIAS`; command bodies also support `--stdin` and `--file PATH`.
 Use `--json` for machine-readable output.
+
+For smaller agent-facing JSON, use `--compact` on routine commands:
+
+```sh
+comms who --compact
+comms post --to pi:brain --compact "Hello"
+comms log --compact
+```
+
+This keeps exact reply identities, message state and history pagination while
+omitting delivery bookkeeping. `--json` still returns full records for diagnostics
+and existing integrations. Native Codex messages omit the redundant recipient ID;
+both receivers retain private attempt/attachment IDs for reliable acknowledgments.
 
 Claude runs its receiver under the actual harness Monitor tool, as described in
 [open-comms](integration/open-comms/SKILL.md). Codex starts or resumes through

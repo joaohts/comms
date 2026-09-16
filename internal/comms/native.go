@@ -94,7 +94,7 @@ func (n *Node) startNative(s Session) {
 					continue
 				}
 				m := *ev.Message
-				payload := marshal(map[string]any{"kind": "comms_peer_message", "authority": "external_peer_content", "origin_authenticated": true, "claims_verified": false, "message_id": m.ID, "sender_machine_id": m.SenderMachine, "sender_agent_id": m.SenderAgent, "recipient_agent_id": m.RecipientAgent, "body": m.Body})
+				payload := marshal(ContentForPeer(m))
 				result, err := codex.Deliver(ctx, s.Target, s.HarnessID, payload)
 				h := Handoff{SenderMachine: m.SenderMachine, MessageID: m.ID, AttemptID: m.AttemptID}
 				switch result.Outcome {

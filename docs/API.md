@@ -5,6 +5,37 @@ Working implementation contract. The server returns JSON errors with `code` and
 `<data-dir>/node.sock`; owner-only directory/socket permissions are mandatory.
 Default data dir is `$COMMS_DATA_DIR` or `~/.local/share/comms`.
 
+## CLI output views
+
+The HTTP API and existing `--json` records retain their full schemas. `--compact`
+is an opt-in JSON view for routine agent calls; it does not change IDs, database
+records, encrypted envelopes, receiver fencing, or acknowledgment semantics.
+
+| Command | Compact fields |
+|---|---|
+| open | id, alias, persistent, scope |
+| agents / identities | id, alias, persistent, scope, online; retired when applicable |
+| who | address (readable alias), recipient (exact machine:agent IDs), online, persistent |
+| post / status MESSAGE | id, state, failure_code when present |
+| status | version, api_version, name, machine_id, broker_enabled, broker_connected |
+| log / inbox | messages with id, from, to, body, state, created_at, optional failure_code; next_cursor |
+| stream | message_id, sender_machine_id, sender_agent_id, body, and peer provenance |
+
+Native Codex deliveries use the same compact peer-content view as `stream
+--compact`: kind, authority, origin_authenticated, claims_verified, message_id,
+sender_machine_id, sender_agent_id and body. The recipient is already fixed by
+the receiver/thread binding. Attempt/attachment IDs, retry counters and lease
+timestamps remain private to the receiver. Plain stream output is already short.
+`stream --json` still returns the original complete event for existing clients.
+
+Compact `who.recipient` and history `from`/`to` are full immutable addresses,
+accepted by `post --to`; aliases are readable labels. Administrative commands
+such as `sessions`, `peers`, `grants` and `export` keep full output, and reject
+`--compact` rather than silently omitting data required for administration.
+
+Plain `open`, `who`, and `agents` output uses aliases without internal IDs. Use
+`--compact` or `--json` when you need exact identifiers programmatically.
+
 `comms serve [--data-dir PATH] [--broker-listen 127.0.0.1:PORT]` runs the service.
 Broker HTTPS termination is configured in front of its loopback listener.
 

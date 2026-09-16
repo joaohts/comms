@@ -152,8 +152,11 @@ func awaitCodexLiveReply(t *testing.T, target, thread, marker string, message Me
 					if err := json.Unmarshal([]byte(item.Output), &p); err != nil {
 						t.Fatal(err)
 					}
-					if p["message_id"] != message.ID || p["sender_machine_id"] != message.SenderMachine || p["sender_agent_id"] != message.SenderAgent || p["recipient_agent_id"] != message.RecipientAgent || p["authority"] != "external_peer_content" || p["origin_authenticated"] != true || p["claims_verified"] != false {
+					if p["message_id"] != message.ID || p["sender_machine_id"] != message.SenderMachine || p["sender_agent_id"] != message.SenderAgent || p["authority"] != "external_peer_content" || p["origin_authenticated"] != true || p["claims_verified"] != false {
 						t.Fatalf("node provenance mismatch: %+v", p)
+					}
+					if _, redundant := p["recipient_agent_id"]; redundant {
+						t.Fatal("model output contains redundant recipient identity")
 					}
 				}
 			}

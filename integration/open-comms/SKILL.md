@@ -77,7 +77,17 @@ or acted upon. Do not automatically reply to protocol delivery receipts.
 `comms inbox` and `comms log [ALIAS|PEER:ALIAS]` are read-only. They do not consume
 mail. Local history is readable under the same OS user. Remote history requires
 a separate history grant and excludes same-machine traffic. Use `--limit` and
-`--cursor` for bounded results; `--json` gives structured output.
+`--cursor` for bounded results. Ordinary output is concise; prefer `--compact`
+when a routine call needs structured JSON (`open`, `who`, `agents`, `identities`,
+`post`, `inbox`, `log`, `stream`, or `status`). Use `--json` for full diagnostic
+records and administrative integrations. Plain Claude stream output is already
+small; there is no need to replace it with JSON just to receive mail.
+
+Copy immutable sender IDs from received messages when replying to that exact
+agent. `who --compact` includes a readable `address` and an immutable `recipient`
+usable with `post --to`. Do not truncate IDs or treat shortened display text as
+an exact routing identity. Compact history keeps complete `from`/`to` addresses
+and `next_cursor`; inspection still never acknowledges messages.
 
 ## Closing and administration
 

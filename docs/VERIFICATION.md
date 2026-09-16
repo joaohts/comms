@@ -87,3 +87,15 @@ Additional final gates:
   `delivered=1`, `provider_status=ok`. APNs ID:
   `51679ce3-dd8b-4203-9766-f5c8f02db814`. This proves provider acceptance, not that
   the user has read the notification.
+
+## Compact output follow-up — v0.1.2
+
+- `--compact` is additive; existing HTTP/JSON schemas and `--json` remain intact.
+- Tests cover exact identities, failure states, pagination, unchanged full records,
+  provenance, and private delivery fencing during a failed acknowledgment retry.
+- Native Codex omits its redundant recipient ID; compact JSON streams use that
+  same model-facing content. Plain Claude streams remain the smaller text form.
+- A real isolated node passed open/list/send/history/receive/status checks. History
+  inspection did not consume mail; the compact receiver produced `handed_off`.
+  Its send response measured 64 bytes compact versus 460 bytes full.
+- Local race tests and vet passed. Release CI and installed-node checks follow.

@@ -21,11 +21,12 @@ import (
 )
 
 type app struct {
-	in          io.Reader
-	out, errOut io.Writer
-	getenv      func(string) string
-	jsonOutput  bool
-	c           *client.Client
+	in            io.Reader
+	out, errOut   io.Writer
+	getenv        func(string) string
+	jsonOutput    bool
+	compactOutput bool
+	c             *client.Client
 }
 
 func usageError(message string) error { return &client.Error{Code: "usage", Message: message} }
@@ -51,6 +52,9 @@ func (a *app) run(ctx context.Context, args []string) error {
 		switch {
 		case v == "--json":
 			a.jsonOutput = true
+		case v == "--compact":
+			a.jsonOutput = true
+			a.compactOutput = true
 		case v == "--data-dir" || v == "--socket":
 			if i+1 == len(args) {
 				return usageError(v + " requires a value")
@@ -72,6 +76,13 @@ func (a *app) run(ctx context.Context, args []string) error {
 	args = filtered
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		return a.help()
+	}
+	if a.compactOutput {
+		switch args[0] {
+		case "version", "--version", "open", "who", "agents", "identities", "post", "log", "inbox", "stream", "status":
+		default:
+			return usageError("--compact supports open, who, agents, identities, post, log, inbox, stream, status and version; use --json for administrative details")
+		}
 	}
 	if args[0] == "version" || args[0] == "--version" {
 		return a.output(map[string]any{"version": version, "protocol_version": comms.ProtocolVersion})
@@ -211,6 +222,9 @@ func (a *app) list(ctx context.Context, path string, args []string, kind string)
 	if err := a.c.Do(ctx, "GET", path, nil, &out); err != nil {
 		return err
 	}
+	if a.compactOutput {
+		return a.compactList(kind, out)
+	}
 	if a.jsonOutput {
 		return a.output(out)
 	}
@@ -221,20 +235,20 @@ func (a *app) list(ctx context.Context, path string, args []string, kind string)
 		if err := json.Unmarshal(out, &items); err != nil {
 			return err
 		}
-		fmt.Fprintln(w, "ADDRESS\tSTATE\tIDENTITY")
+		fmt.Fprintln(w, "ADDRESS\tSTATE")
 		for _, p := range items {
 			state := "offline"
 			if p.Online {
 				state = "online"
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\n", p.Address(), state, p.AgentID)
+			fmt.Fprintf(w, "%s\t%s\n", p.Address(), state)
 		}
 	case "agents":
 		var items []comms.Agent
 		if err := json.Unmarshal(out, &items); err != nil {
 			return err
 		}
-		fmt.Fprintln(w, "ALIAS\tPERSISTENT\tSTATE\tIDENTITY")
+		fmt.Fprintln(w, "ALIAS\tPERSISTENT\tSCOPE\tSTATE")
 		for _, p := range items {
 			state := "offline"
 			if p.Online {
@@ -243,7 +257,7 @@ func (a *app) list(ctx context.Context, path string, args []string, kind string)
 			if p.RetiredAt != nil {
 				state = "retired"
 			}
-			fmt.Fprintf(w, "%s\t%t\t%s\t%s\n", p.Alias, p.Persistent, state, p.ID)
+			fmt.Fprintf(w, "%s\t%t\t%s\t%s\n", p.Alias, p.Persistent, p.Scope, state)
 		}
 	case "peers":
 		var items []comms.Peer
@@ -344,10 +358,13 @@ func (a *app) open(ctx context.Context, args []string) error {
 	if err := a.c.Do(ctx, "POST", "/v1/sessions", r, &out); err != nil {
 		return err
 	}
+	if a.compactOutput {
+		return a.output(map[string]any{"id": out.Agent.ID, "alias": out.Agent.Alias, "persistent": out.Agent.Persistent, "scope": out.Session.Scope})
+	}
 	if a.jsonOutput {
 		return a.output(out)
 	}
-	_, err := fmt.Fprintf(a.out, "%s: %s (%s), scope=%s, attachment=%s\n", out.Agent.Alias, out.Agent.ID, map[bool]string{true: "persistent", false: "ephemeral"}[out.Agent.Persistent], out.Session.Scope, out.Session.ID)
+	_, err := fmt.Fprintf(a.out, "%s: %s, scope=%s\n", out.Agent.Alias, map[bool]string{true: "persistent", false: "ephemeral"}[out.Agent.Persistent], out.Session.Scope)
 	if err == nil && out.Session.Harness == "claude" {
 		_, err = fmt.Fprintln(a.out, "Start comms stream "+out.Agent.Alias+" in this session's Monitor tool to receive messages.")
 	}
@@ -622,6 +639,9 @@ func (a *app) post(ctx context.Context, args []string) error {
 	if err := a.c.Do(ctx, "POST", "/v1/messages", comms.SendRequest{SessionID: s.ID, To: *to, Body: string(body), ID: *id}, &m); err != nil {
 		return err
 	}
+	if a.compactOutput {
+		return a.output(compactOutcome(m))
+	}
 	if a.jsonOutput {
 		return a.output(m)
 	}
@@ -667,6 +687,22 @@ func (a *app) history(ctx context.Context, args []string, pending bool) error {
 	var out comms.HistoryPage
 	if err := a.c.Do(ctx, "POST", "/v1/history", r, &out); err != nil {
 		return err
+	}
+	if a.compactOutput {
+		messages := make([]map[string]any, 0, len(out.Messages))
+		for _, m := range out.Messages {
+			entry := compactOutcome(m)
+			entry["from"] = m.SenderMachine + ":" + m.SenderAgent
+			entry["to"] = m.RecipientMachine + ":" + m.RecipientAgent
+			entry["body"] = m.Body
+			entry["created_at"] = m.CreatedAt
+			messages = append(messages, entry)
+		}
+		page := map[string]any{"messages": messages}
+		if out.Cursor != "" {
+			page["next_cursor"] = out.Cursor
+		}
+		return a.output(page)
 	}
 	if a.jsonOutput {
 		return a.output(out)
@@ -782,7 +818,8 @@ func (a *app) help() error {
   retire AGENT                        Retire an identity explicitly
   version                             Release and protocol versions
 
-Global: --json, --data-dir PATH, --socket PATH
+Global: --json (full details), --compact (small JSON for routine agent calls),
+        --data-dir PATH, --socket PATH
 Address: local-alias or peer-alias:agent-alias. Sender defaults to the current
 harness session, COMMS_AGENT or COMMS_SESSION_ID. post also accepts --from ALIAS.
 Default scope is local. --global must be chosen again for a new attachment.
