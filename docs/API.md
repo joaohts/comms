@@ -88,7 +88,7 @@ Sender identity/scope is taken from the attached session, not arbitrary `from` d
 An operator may require a shared service API key on **every** broker request,
 including registration and streams. It is sent in `X-Comms-Service-Key` alongside
 the existing machine `Authorization: Bearer ...` credential. A missing/wrong key
-returns401 `service_key_required` before request parsing or registration. This
+returns 401 `service_key_required` before request parsing or registration. This
 extra gate does not replace proof of machine-key possession, grants, or encryption.
 
 Configure both server and consumer nodes with `serve --broker-service-key-file

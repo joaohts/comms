@@ -30,7 +30,7 @@ updating the viewer's pin is an explicit reviewed change, with no automatic
 download of a moving `latest` binary.
 
 ```sh
-gh release download v0.1.3 --repo joaohts/comms \
+gh release download v0.1.5 --repo joaohts/comms \
   --pattern comms_Linux_arm64.tar.gz --pattern SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
 tar -xzf comms_Linux_arm64.tar.gz

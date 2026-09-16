@@ -1,3 +1,35 @@
+# Broker service-key protection — v0.1.5, 2026-09-16 UTC
+
+At João's urgent request, optional shared service-key enforcement was added and
+**enabled on the Pi broker**. Mac and Pi run verified release v0.1.5 with the
+private file explicitly configured in their supervisors. The key value is not
+recorded here, in the vault, or in public identity exports.
+
+- Release commit `a21dd0c`; release workflow `35050635527` and CI `35050635480` passed.
+- `X-Comms-Service-Key` gates every broker route, including auth/registration,
+  streams and optional legacy forwarding. Machine proof/bearer auth, grants and
+  message encryption remain separate requirements.
+- Both managed machines use `~/.local/share/comms/broker-service-key` (0600),
+  passed by `--broker-service-key-file`. Missing/invalid configured files fail
+  startup; normal upgrades preserve the option. HTTP redirects are not followed.
+- Public missing/wrong-key requests returned 401 `service_key_required`. With the
+  correct service key but no machine credential, discovery returned 401
+  `unauthorized`. With the key, retired legacy/local-only routes remain 404.
+- Mac/Pi status reports configured=true and connected=true. A real brain reply
+  **SERVICE_KEY_ROUNDTRIP_OK** (`brain_befda3aab34b16bd757b30415ac938dd24911796`)
+  followed request `msg_service_api_key_probe`, durably handed off.
+- Final published artifacts were installed after the urgent deployment; this also
+  exercised preservation of the key setting without re-supplying the flag.
+- At João's explicit request, a private JSON containing the broker URL, public
+  identities and service API key was copied to his clipboard without printing
+  the secret. The guide explains extracting only the secret to a private file.
+- Agent Monitor PR16 adds file selection (no key-content display/read in GUI),
+  safe configured status, and installer forwarding; bundled v0.1.5 pins are exact.
+  Final head `e495c841bf2c804ed88f8ef544f2d0a44bd822ca`, CI `35052072094` passed.
+  Headless bundle/signature/client tests passed; PR remains unmerged.
+
+Earlier deployment records follow as history.
+
 # Current deployment — v0.1.3, 2026-09-16 UTC
 
 **The new `comms` CLI is the default on Mac and Pi.** `comms-v1` is a symlink to
