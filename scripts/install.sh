@@ -19,6 +19,7 @@ allow_insecure=0
 start=1
 service=1
 skills=1
+codex_alias=1
 replace_legacy=0
 skill_backup_root="${XDG_STATE_HOME:-$HOME/.local/state}/comms/skill-backups"
 
@@ -84,7 +85,8 @@ Usage: scripts/install.sh [options]
   --legacy-proxy-url URL Forward non-/v1 HTTP paths to legacy broker
   --allow-insecure      Allow HTTP broker URLs for trusted local testing
   --replace-legacy      Explicitly back up and replace legacy CLI/skill files
-  --skip-skills         Do not install open-comms integrations
+  --skip-skills         Do not install open-comms integrations or shell alias
+  --skip-codex-alias     Do not configure the Codex shell shortcut
   --no-service          Install files without registering a supervisor
   --no-start            Register service but do not start/restart it
 EOF
@@ -103,6 +105,7 @@ while (($#)); do
     --allow-insecure) allow_insecure=1; shift ;;
     --replace-legacy) replace_legacy=1; shift ;;
     --skip-skills) skills=0; shift ;;
+    --skip-codex-alias) codex_alias=0; shift ;;
     --no-service) service=0; start=0; shift ;;
     --no-start) start=0; shift ;;
     --help|-h) usage; exit 0 ;;
@@ -220,6 +223,50 @@ p.write_text(text)
 # END COMMS_SKILL_RENDER
 PY
   done
+fi
+if (( skills && codex_alias )); then
+  python3 - "$target" <<'PYALIAS'
+# BEGIN COMMS_CODEX_ALIAS
+import os,pathlib,re,shlex,shutil,sys,tempfile
+command=str(pathlib.Path(sys.argv[1]).absolute())
+shell=pathlib.Path(os.environ.get('SHELL','')).name
+home=pathlib.Path.home()
+if shell == 'zsh':
+    rc=pathlib.Path(os.environ.get('ZDOTDIR') or home)/'.zshrc'
+elif shell == 'bash':
+    rc=home/'.bashrc'
+else:
+    print('Codex shortcut skipped: unsupported shell. Launch with '+shlex.quote(command)+' codex.')
+    sys.exit(0)
+# Resolve symlinks so dotfile-manager links stay intact.
+rc=rc.resolve()
+start='# BEGIN COMMS CODEX ALIAS'
+end='# END COMMS CODEX ALIAS'
+old=rc.read_text() if rc.exists() else ''
+pattern=re.compile(r'^'+re.escape(start)+r'\n.*?^'+re.escape(end)+r'(?:\n|$)',re.M|re.S)
+matches=list(pattern.finditer(old))
+if old.count(start)!=len(matches) or old.count(end)!=len(matches) or len(matches)>1:
+    raise SystemExit('Malformed comms alias block in '+str(rc)+'; fix it or use --skip-codex-alias.')
+unmanaged=pattern.sub('',old)
+if re.search(r'^\s*(?:alias\s+codex=|(?:function\s+)?codex\s*\(\s*\)|function\s+codex\b)',unmanaged,re.M):
+    print('Preserved existing Codex alias/function in '+str(rc)+'. Use '+shlex.quote(command)+' codex for comms.')
+    sys.exit(0)
+block=start+'\n# Interactive sessions use comms; bypass with: command codex <args>\n'
+block+='alias codex='+shlex.quote(shlex.quote(command)+' codex')+'\n'+end+'\n'
+new=pattern.sub(lambda _:block,old) if matches else old+('' if not old or old.endswith('\n') else '\n')+block
+if new!=old:
+    rc.parent.mkdir(parents=True,exist_ok=True)
+    if rc.exists():
+        fd,backup=tempfile.mkstemp(prefix=rc.name+'.comms-backup-',dir=rc.parent)
+        os.close(fd)
+        shutil.copy2(rc,backup)
+        print('Shell config backup: '+backup)
+    rc.write_text(new)
+print('Codex shortcut installed in '+str(rc)+'. Open a new shell or source this file; then run codex.')
+if shell == 'bash':
+    print('Bash login shells must source ~/.bashrc to load the shortcut.')
+# END COMMS_CODEX_ALIAS
+PYALIAS
 fi
 
 args=(serve --data-dir "$data_dir")

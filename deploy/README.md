@@ -39,6 +39,22 @@ Add `~/.local/bin` to the user's PATH. A Pi user service that must survive logou
 needs lingering enabled (`sudo loginctl enable-linger USER`) if not already set.
 The installer does not change machine-wide services or restart unrelated units.
 
+The installer also adds a managed `codex` alias to the installing user's zsh
+(`$ZDOTDIR/.zshrc`, default `~/.zshrc`) or bash (`~/.bashrc`) configuration.
+Open a new shell or source that file, then use `codex` or `codex resume THREAD`
+to launch with comms receiving support. Bash login shells must source `.bashrc`.
+The alias uses the installed comms executable's absolute path. Existing custom
+Codex aliases/functions are preserved; changed config files are backed up, and
+rerunning the installer updates the managed block without duplicating it.
+Other shells receive manual launch guidance.
+
+Use `command codex exec ...`, `command codex login`, or `command codex ...` for
+operations outside the comms interactive launcher. Pass `--skip-codex-alias` to
+leave shell configuration untouched; `--skip-skills` also skips alias setup.
+To remove the shortcut, delete the `COMMS CODEX ALIAS` block from the shell config
+and run `unalias codex` in existing shells. The shortcut affects terminal launches
+only; it does not attach sessions launched by the Codex app.
+
 ## Explicit legacy coexistence
 
 Keep the old board/history and new databases separate. Do not import plaintext

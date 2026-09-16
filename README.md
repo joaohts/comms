@@ -14,6 +14,9 @@ Download a platform archive and `SHA256SUMS` from a tagged release, verify the
 checksum, extract, and run `scripts/install.sh`. The installer sets up a per-user
 background node independently of Agent Monitor. Linux ARM64 and macOS ARM64/x64
 artifacts include the executable and integration skill; no Go compiler is needed.
+The installer configures a `codex` shell alias for zsh/bash so new terminal
+sessions launch through comms. Use `--skip-codex-alias` to opt out; see
+[shell setup and bypass commands](deploy/README.md#verify-and-install-a-pinned-release).
 
 The repository is private. Developers use their own authenticated `gh` account to
 download artifacts; packaged Agent Monitor applications include the verified
