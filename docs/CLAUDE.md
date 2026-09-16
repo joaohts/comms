@@ -81,7 +81,21 @@ delivery with provenance, reconnect after node restart, persistent reopen,
 duplicate-open behavior, and receiver cleanup on MCP EOF. Tests use isolated
 temporary nodes without a broker, credentials, model calls, or existing peers.
 
-The upstream Node.js proof of concept was peer-reported to wake idle Claude
-2.1.273 sessions. The Go implementation still needs a live Claude idle-wake
-smoke test after installation and startup channel admission; protocol tests
-alone do not establish that behavior.
+Live work-Mac verification on 2026-09-16 used Claude Code 2.1.273 (Haiku 4.5)
+and an isolated local node with no broker or paired peers. Claude replied through
+MCP to a unique marker while idle, replied again after the node restarted with
+the same attachment, and resumed its persistent identity in a new Claude
+process. The final resume used `0.1.6-dev.claude-receiver.2`. Each marker produced
+one matching reply, with no Monitor or terminal-injected peer message.
+
+The test also found and corrected a shutdown issue: waiting on `Session.Wait`
+alone ignored cancellation while stdin stayed open. The server now uses the
+SDK's `Run` lifecycle. SIGINT and SIGTERM both exited cleanly in approximately
+4 ms with the input pipe held open. Exiting the resumed Claude left neither its
+TUI nor MCP child running; the saved identity remained offline. The temporary
+node was stopped afterward.
+
+João selected `channel` as the default on this work Mac. Unconfigured nodes
+still default to `monitor`. Startup channel admission remains specific to each
+Claude installation; remote/global broker delivery was outside this isolated
+test. The earlier Node.js proof of concept is separate from these Go results.
