@@ -151,6 +151,36 @@ board during this parallel phase.
 
 ## Disable and rollback
 
+### Retiring the legacy broker
+
+After verifying the v1 brain adapter and installing the new default `comms` CLI,
+retire the parallel legacy ingress with the separately invoked migration:
+
+```sh
+python3 integration/brain/retire_legacy.py --root /home/joaohts/voice-assistant \
+  --backup-dir /home/joaohts/.local/state/comms/brain-backups
+```
+
+This removes the legacy polling thread from startup, routes both `comms:` and
+`comms-v1:` channel names through the new adapter, and uses compact structured
+discovery plus immutable recipients for spawned-agent tasks. Task submissions
+carry a stable ID; an ambiguous failure is reported for inspection, not replayed
+or called successful. Ordinary future adapter updates preserve this retirement.
+
+Voice announcements continue through localhost HTTP. A failed voice request is
+reported as unavailable; the removed board fallback cannot falsely claim delivery.
+The voice daemon's transitional polling can be retired with the separate
+`integration/voice/retire_legacy_voice.py` utility. Both migrations preflight and
+back up source without reading secrets, touching model databases, or restarting
+services. Restart the brain and voice user units after coordinated installation;
+never restart openclaw-gateway to perform this migration.
+
+The returned backup directory supports rollback through `patch_brain.py
+--rollback`. Retain the legacy broker database separately; do not import it into
+the node or overwrite either database with the other format.
+
+### Disabling the new adapter
+
 Set `COMMS_V1_ENABLED=0` (or remove the drop-in), reload user units, then restart
 only the brain. Preserve the journal for outstanding-work inspection.
 

@@ -37,6 +37,10 @@ TOOLS_HOOK = TOOLS_BEGIN + '''    elif channel.startswith("comms-v1:"):
         status = f"queued on comms-v1 to {target} ({result['id']})"
 ''' + TOOLS_END
 TARGETS = ("brain/server.py", "brain/tools.py", "brain/comms_v1.py")
+RETIRED_MARKER = "# managed comms legacy retired"
+RETIRED_TOOLS_HOOK = TOOLS_HOOK.replace(
+    'elif channel.startswith("comms-v1:"):',
+    'elif channel.startswith(("comms-v1:", "comms:")):')
 
 
 def digest(data):
@@ -63,7 +67,8 @@ def prepare(root, module_path=None):
     updates = {
         "brain/server.py": replace_hook(server, SERVER_BEGIN, SERVER_END, SERVER_HOOK,
                                         SERVER_ANCHOR, True).encode(),
-        "brain/tools.py": replace_hook(tools, TOOLS_BEGIN, TOOLS_END, TOOLS_HOOK,
+        "brain/tools.py": replace_hook(tools, TOOLS_BEGIN, TOOLS_END,
+                                       RETIRED_TOOLS_HOOK if RETIRED_MARKER in tools else TOOLS_HOOK,
                                        TOOLS_ANCHOR, False).encode(),
         "brain/comms_v1.py": module_path.read_bytes(),
     }
@@ -90,6 +95,15 @@ def atomic_write(path, data, mode=0o644):
 def install(root, backup_root=None, dry_run=False):
     root = Path(root).resolve()
     updates = prepare(root)
+    return apply_updates(root, updates, backup_root, dry_run)
+
+
+def apply_updates(root, updates, backup_root=None, dry_run=False):
+    root = Path(root).resolve()
+    if not set(updates).issubset(TARGETS):
+        raise ValueError("unexpected integration target")
+    for relative, content in updates.items():
+        compile(content, relative, "exec")
     changed = {relative: data for relative, data in updates.items()
                if not (root / relative).exists() or (root / relative).read_bytes() != data}
     if dry_run:
