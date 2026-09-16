@@ -5,7 +5,8 @@ executable provides a machine-local node, CLI, and optional broker role.
 
 The node is deployed on a Mac and Pi with direct Claude and brain
 round trips. See [rollout evidence](docs/ROLLOUT.md) for the current verification
-state. The legacy service and its history remain separate during migration.
+state. The managed deployment now uses only the new API; the retired legacy
+history is retained separately.
 
 ## Install
 

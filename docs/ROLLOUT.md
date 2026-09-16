@@ -1,4 +1,52 @@
-# Production rollout — 2026-09-15
+# Current deployment — v0.1.3, 2026-09-16 UTC
+
+**The new `comms` CLI is the default on Mac and Pi.** `comms-v1` is a symlink to
+that executable. Both supervised nodes run v0.1.3 with unchanged machine keys;
+brain retains persistent ID `a_f45edf2c4849fa3c9d0aff6446c3ca99`.
+
+- Release: https://github.com/joaohts/comms/releases/tag/v0.1.3
+- Release commit `4c275bbc58f9d0609eadda7bcaf8236f78fea81a`; release workflow
+  `35046287824` passed, including Go race/vet, 16 brain and 6 voice tests.
+- Public Cloudflare broker: `https://comms.jsplayground.cc/v1/`. Unauthenticated
+  `/v1/who` returns 401; local-only `/v1/sessions` returns 404 publicly.
+- Legacy `comms-api.service` is **inactive and disabled**. The new node's proxy
+  flag is removed. Old public `/who`, `/cli`, and `/skill` return 404.
+- Final WAL-safe legacy backup (integrity_check=ok):
+  `/home/joaohts/.local/state/comms/legacy-retirement/20260916T021005Z/legacy-history-final.db`.
+  The old source/database remains separate; no history was imported or deleted.
+- Brain no longer starts its legacy polling thread. Both comms channel spellings
+  use the new adapter; spawned-task discovery uses compact JSON and immutable
+  recipients with stable submission IDs. Future adapter updates retain retirement.
+- Voice's transitional board poller/registration/fallback is retired. Its existing
+  localhost HTTP trigger, audio/model code and direct brain HTTP delegation remain.
+- Brain and voice were restarted while idle. openclaw-gateway was not restarted.
+  Source backups: brain `20260916T020619Z-bc2c285b`, voice
+  `20260916T020619Z-09220230` under each private backup directory.
+- Pi launcher commit `9510103` emits `/open-comms session-$id --global` inside the
+  actual Claude session after REPL readiness; changelog commit `ba2c708` records it.
+- After disabling the old broker, root received **BRAIN_AFTER_LEGACY_OFF**
+  (`brain_7526af84b3f43cbd1c220fca907ca11a08680fc7`) and
+  **CLAUDE_AFTER_LEGACY_OFF** (`msg_287705299fcd75bc77de4ddf3441481a`).
+  Requests `msg_brain_after_legacy_off` and `msg_claude_after_legacy_off` are
+  durably handed off. These exchanges used the new public broker exclusively.
+- A freshly spawned default-model Claude displayed the correct new join command,
+  but Fable quota prevented execution. This new-session model check remains
+  quota-blocked; its temporary session was cleaned up. The emitted command and
+  existing-agent/brain delivery were verified independently.
+- Agent Monitor PR16 remains ready and **unmerged**, pinned to v0.1.3 at
+  `1c231d12d7c9e33dc7b3bc430d5e13b9cb3f1a29`. Full bundle/signature/client checks
+  and CI `35046754240` passed. The original dirty GUI checkout was preserved.
+- Work-Mac install/update/pairing guide and public-only Pi/personal exports are
+  synced in the vault: `projects/comms-operations.md` and `projects/comms-pairing/`.
+  No work machine identity or grants were fabricated; onboarding runs on that Mac.
+
+The root Codex conversation still needs its documented one-time launcher resume
+for continuous native receiving. Manual tool reads used for these tests are not
+represented as automatic idle delivery.
+
+The remainder preserves the initial rollout and earlier checkpoints.
+
+# Initial production rollout — 2026-09-15 (historical)
 
 **Software delivery verified: v0.1.1 runs on both Mac and Pi.** Final real brain
 and Pi Claude round trips pass, and Agent Monitor PR16 is ready for review.

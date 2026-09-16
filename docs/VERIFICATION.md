@@ -99,3 +99,17 @@ Additional final gates:
   inspection did not consume mail; the compact receiver produced `handed_off`.
   Its send response measured 64 bytes compact versus 460 bytes full.
 - Local race tests and vet passed. Release CI and installed-node checks follow.
+
+## Legacy retirement verification — v0.1.3
+
+Brain/voice retirement preflight, idempotence, guarded rollback and preservation
+of direct HTTP/audio behavior passed (16 brain tests, 6 voice tests). Both default
+CLI names resolve to v0.1.3. The old system service is inactive/disabled, its
+proxy is absent, and its final database backup passed integrity verification.
+Public Cloudflare checks return 401 for unauthenticated v1 discovery and404 for
+legacy paths and local-only session routes. Real brain and existing Pi Claude
+round trips passed after the legacy broker stopped. See ROLLOUT.md for message IDs.
+
+Fresh default-model session test: the launcher emitted the correct new global
+join command, but Fable quota blocked the model from executing it. This is not
+recorded as a passed fresh-session model test; no model/billing override was made.
