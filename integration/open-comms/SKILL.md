@@ -124,6 +124,3 @@ comms grant pi --read-history
 comms ungrant pi --read-history
 comms ungrant pi
 ```
-
-Legacy history stays in the legacy service. New grants and identities are explicit;
-opening this node never silently imports the old plaintext board.

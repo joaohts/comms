@@ -1,4 +1,4 @@
-# Installation and migration
+# Installation
 
 The release contains one executable for the local node, optional broker, and CLI.
 It also contains `scripts/install.sh` and the Claude/Codex `open-comms` integration.
@@ -39,71 +39,49 @@ Add `~/.local/bin` to the user's PATH. A Pi user service that must survive logou
 needs lingering enabled (`sudo loginctl enable-linger USER`) if not already set.
 The installer does not change machine-wide services or restart unrelated units.
 
-The installer also adds a managed `codex` alias to the installing user's zsh
-(`$ZDOTDIR/.zshrc`, default `~/.zshrc`) or bash (`~/.bashrc`) configuration.
-Open a new shell or source that file, then use `codex` or `codex resume THREAD`
-to launch with comms receiving support. Bash login shells must source `.bashrc`.
-The alias uses the installed comms executable's absolute path. Existing custom
-Codex aliases/functions are preserved; changed config files are backed up, and
-rerunning the installer updates the managed block without duplicating it.
-Other shells receive manual launch guidance.
+The installer also adds managed `claude` and `codex` aliases to the installing
+user's zsh (`$ZDOTDIR/.zshrc`, default `~/.zshrc`) or bash (`~/.bashrc`)
+configuration. Open a new shell or source that file, then use `claude`, `codex`,
+or `codex resume THREAD` to launch with comms receiving support. Bash login shells
+must source `.bashrc`. The aliases use the installed comms executable's absolute
+path. Existing custom `claude`/`codex` aliases or functions are preserved; changed
+config files are backed up, and rerunning the installer updates the managed blocks
+without duplicating them. Other shells receive manual launch guidance.
 
-Use `command codex exec ...`, `command codex login`, or `command codex ...` for
-operations outside the comms interactive launcher. Pass `--skip-codex-alias` to
-leave shell configuration untouched; `--skip-skills` also skips alias setup.
-To remove the shortcut, delete the `COMMS CODEX ALIAS` block from the shell config
-and run `unalias codex` in existing shells. The shortcut affects terminal launches
-only; it does not attach sessions launched by the Codex app.
+Use `command claude ...` or `command codex ...` (for example `command codex exec`
+or `command codex login`) to bypass the comms launcher. Pass `--skip-claude-alias`
+or `--skip-codex-alias` to leave shell configuration untouched; `--skip-skills`
+also skips alias setup. To remove a shortcut, delete its `COMMS CLAUDE ALIAS` or
+`COMMS CODEX ALIAS` block from the shell config and run `unalias claude` or
+`unalias codex` in existing shells. The shortcuts affect terminal launches only;
+they do not attach sessions launched by the Claude or Codex apps.
 
-## Explicit legacy coexistence
+## Run your own broker
 
-Keep the old board/history and new databases separate. Do not import plaintext
-history, trust old bearer credentials as peer keys, or overwrite the old database.
-
-For the initial migration, use a separate command name and leave existing skills:
-
-```sh
-./scripts/install.sh --binary-name comms-v1 --skip-skills \
-  --broker-listen 127.0.0.1:3302
-comms-v1 name pi
-comms-v1 export --alias pi --json > pi-public.json
-```
-
-Exchange public JSON bundles over an authenticated channel outside the broker,
-import on each peer, and issue directional grants explicitly. `pair` does not
-implicitly grant access. Use the configured HTTPS broker URL for remote nodes.
-Local-only nodes require neither broker configuration nor pairing.
-
-The optional `--legacy-proxy-url http://127.0.0.1:3301` lets the new broker forward
-non-`/v1/` routes to a separately running legacy broker. This is only a routing
-bridge: storage, credentials, and plaintext history remain separate. Moving the
-legacy listener and proxy endpoint must be a separately scheduled deployment
-operation; the installer does not do it or restart that legacy service.
-
-When ready to use the standard command and new skill, explicitly run with
-`--replace-legacy`. Changed binaries are backed up with timestamped names. Skill backups are kept
-outside active skill directories under `${XDG_STATE_HOME:-~/.local/state}/comms/skill-backups/`. Keep those
-backups and the old service available until every migrated integration is tested.
-For consistent SQLite backups of a live legacy database, use its SQLite backup
-API; copying the `.db` alone while WAL is active is insufficient.
-
-## Persistent service identity
+Same-machine messaging needs no broker. Cross-machine traffic goes through one
+broker, which stores only ciphertext queues. Any comms node can run the broker
+role alongside its local node; enable it with the installer on the chosen host:
 
 ```sh
-comms open brain --persistent --global --harness service --session-id brain-service
-comms stream brain --json
+bash scripts/install.sh --broker-listen 127.0.0.1:3302
 ```
 
-The long-running brain ingress reads events, preserves peer provenance, and maps
-replies through `comms post --from brain --to PEER:AGENT`. Preserve the existing
-`NO_REPLY` loop breaker. An ordinary Claude session must start its stream inside
-its own Monitor tool; a service-owned stream cannot wake another model.
+The broker listens on plain HTTP, and nodes accept an HTTP broker URL only on
+loopback (`--allow-insecure` exists for trusted local testing only). For other
+machines, put a TLS reverse proxy in front of the listener, for example Caddy
+(`reverse_proxy 127.0.0.1:3302`) or `tailscale serve`, then point each node at
+the HTTPS origin:
 
-## Updating and rollback
+```sh
+comms broker https://broker.example.com
+```
 
-### Optional broker service API key
+Then pair machines and grant access as described in the main README's
+cross-machine section.
 
-Use a separate, randomly generated shared API key to restrict access to an
+### Service API key
+
+Configure a service key for any internet-reachable broker. Use a separate, randomly generated shared API key to restrict access to an
 instance, including new-machine registration. Save it in a private file on the
 broker and each authorized consumer node; distribute it through a private channel.
 Do not put it in a URL, command-line value, repository, vault, or public export.
@@ -119,7 +97,19 @@ configured files fail closed. Without configuration, this extra gate is optional
 `comms status --compact` reports only whether a service key is configured.
 Machine key verification, authentication and directional grants remain required.
 
-### Node updates
+## Persistent service identity
+
+```sh
+comms open brain --persistent --global --harness service --session-id brain-service
+comms stream brain --json
+```
+
+A long-running service reads events, preserves peer provenance, and maps replies
+through `comms post --from ALIAS --to PEER:AGENT`. The brain ships its own
+integration; see [brain integration](../docs/BRAIN.md). An ordinary Claude session must start its stream inside
+its own Monitor tool; a service-owned stream cannot wake another model.
+
+## Updating and rollback
 
 Install the selected release using the same data directory. Upgrades preserve the
 machine identity, keys, inboxes, and persistent agent IDs. The supervisor stops

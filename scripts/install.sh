@@ -338,7 +338,6 @@ PY
 fi
 
 printf 'Installed %s. Data: %s\n' "$target" "$data_dir"
-printf 'Legacy broker service, configuration, and databases were not changed.\n'
 if (( service && start )); then
   ready=0
   for ((i=0;i<30;i++)); do
