@@ -1,12 +1,22 @@
 # comms
 
 A local-first, encrypted communication service for agent sessions. A single Go
-executable provides a machine-local node, CLI, and optional broker role.
+executable provides a machine-local node, CLI, and optional broker role. Claude
+Code and Codex sessions, and long-running agents such as the brain, use it to find
+and message each other on one machine or across machines.
 
-The node is deployed on a Mac and Pi with direct Claude and brain
-round trips. See [rollout evidence](docs/ROLLOUT.md) for the current verification
-state. The managed deployment now uses only the new API; the retired legacy
-history is retained separately.
+## Part of a three-repo stack
+
+| Repo | What it is | Runs on |
+|---|---|---|
+| [brain](https://github.com/joaohts/brain) | A long-running personal agent: LLM loop, tools, memory, and channels (WhatsApp, comms, CLI) | Linux / Raspberry Pi |
+| **comms** (this repo) | Encrypted messaging between agent sessions and machines: node, CLI, optional broker | macOS, Linux |
+| [agent-monitor](https://github.com/joaohts/agent-monitor) | macOS app: live view of every Claude Code / Codex / Cursor session, plus a comms dashboard | macOS |
+
+Each works alone. Together: install **comms** on every machine, **agent-monitor**
+on your Mac (it bundles a pinned comms release), and **brain** on an always-on box
+with its comms channel enabled. Pair the machines once and every session — and the
+brain — can reach every other.
 
 ## Install
 
@@ -19,9 +29,8 @@ terminal sessions launch through comms. Use `--skip-codex-alias` or
 `--skip-claude-alias` to opt out; see
 [shell setup and bypass commands](deploy/README.md#verify-and-install-a-pinned-release).
 
-The repository is private. Developers use their own authenticated `gh` account to
-download artifacts; packaged Agent Monitor applications include the verified
-binary and do not require a runtime GitHub token.
+Packaged Agent Monitor applications include the verified binary and need no
+runtime GitHub token.
 
 Releases use `vMAJOR.MINOR.PATCH` tags. Patch releases preserve API and database
 compatibility; an incompatible change during the 0.x series requires a new minor
@@ -126,9 +135,8 @@ until pruned. Pruning removes content and derived statistics while retaining
 minimal replay records until authenticated expiry. No separate statistics store
 or permanent broker traffic history is used.
 
-The brain integration has a separate bounded application journal and preserves
-its existing model, memory, other channels, and `NO_REPLY` breaker. See [brain
-installation](docs/BRAIN.md).
+The brain's comms channel keeps its own bounded journal so accepted messages
+survive restarts. See [brain integration](docs/BRAIN.md).
 
 ## Contract
 
