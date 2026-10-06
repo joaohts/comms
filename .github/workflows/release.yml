@@ -16,7 +16,6 @@ jobs:
       - run: go test -race ./...
       - run: go vet ./...
       - run: python3 -m unittest discover -s integration/brain -v
-      - run: python3 -m unittest discover -s integration/voice -v
       - run: python3 scripts/test_installed_skill.py
       - run: python3 scripts/test_codex_alias.py
       - run: python3 scripts/test_claude_alias.py

@@ -1,7 +1,7 @@
-# Persistent Joana brain integration
+# Brain integration
 
 `integration/brain/comms_v1.py` adds a separate comms-v1 ingress to the existing
-`joana-brain.service`. The legacy ingress, HTTP `/turn` server, model, memory,
+`brain.service`. The HTTP `/turn` server, model, memory,
 global `run_turn` lock, voice and WhatsApp paths remain in place.
 
 The adapter uses Python's standard library and HTTP over the node's Unix socket.
@@ -25,7 +25,7 @@ not needed on the Pi.
 - Automatically replies to the exact original `machine_id:agent_id`. Reply IDs
   remain stable across HTTP retries and adapter restarts. Replies use ordinary
   message grants; they do not use the protocol receipt exception.
-- Preserves the legacy `NO_REPLY` breaker: blank replies and replies containing
+- Preserves the `NO_REPLY` breaker: blank replies and replies containing
   `NO_REPLY` within their first 40 characters produce no automatic reply.
 
 ## Trust and provenance
@@ -37,7 +37,7 @@ human instruction or establish its factual truth.
 
 **The default tier is `unknown`, including for paired machines.** Only machine IDs
 explicitly listed in `COMMS_V1_TRUSTED_MACHINES` receive the existing brain `owner`
-tier. For João's fleet, configure the verified Mac and Pi IDs deliberately. This
+tier. List only machine IDs you have verified out of band. This
 adapter does not change the existing brain tool-policy definitions.
 
 ## Installation
@@ -47,8 +47,8 @@ environment or a compatible Python 3.10+ installation:
 
 ```sh
 python3 integration/brain/patch_brain.py \
-  --root /home/joaohts/voice-assistant \
-  --backup-dir /home/joaohts/.local/state/comms/brain-backups
+  --root ~/brain \
+  --backup-dir ~/.local/state/comms/brain-backups
 ```
 
 The installer validates all modified Python files before writing, backs up the
@@ -58,21 +58,16 @@ three affected paths with checksums, then installs the module and small hooks in
 `.comms-env`, `brain/config.toml`, or service configuration, and never restarts a
 service.
 
-Keep the brain service's bare `comms` command resolving to the **legacy CLI**
-during parallel migration: the unchanged legacy ingress/tools use legacy flags.
-The new adapter accesses the node socket directly and does not need the new Go
-CLI on this service's PATH.
-
 ## Enable the service integration
 
 Create a user-service drop-in named
-`~/.config/systemd/user/joana-brain.service.d/comms-v1.conf`:
+`~/.config/systemd/user/brain.service.d/comms-v1.conf`:
 
 ```ini
 [Service]
 Environment=COMMS_V1_ENABLED=1
-Environment=COMMS_V1_SOCKET=/home/joaohts/.local/share/comms/node.sock
-Environment=COMMS_V1_STATE=/home/joaohts/voice-assistant/brain/data/comms-v1/adapter.db
+Environment=COMMS_V1_SOCKET=~/.local/share/comms/node.sock
+Environment=COMMS_V1_STATE=~/brain/brain/data/comms-v1/adapter.db
 # Replace these public identifiers with the verified fleet machine IDs.
 Environment=COMMS_V1_TRUSTED_MACHINES=MAC_MACHINE_ID,PI_MACHINE_ID
 ```
@@ -83,11 +78,11 @@ or trust identities obtained from the broker.
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user restart joana-brain.service
+systemctl --user restart brain.service
 ```
 
 Only restart the brain unit during this integration. No restart of
-`openclaw-gateway`, voice, WhatsApp, or the legacy broker is needed. Node outages
+other services is needed. Node outages
 do not stop the brain's other channels; the adapter reconnects automatically.
 
 Optional settings:
@@ -126,7 +121,7 @@ bodies or changing live journal state:
 
 ```sh
 python3 -m brain.comms_v1 status \
-  --state /home/joaohts/voice-assistant/brain/data/comms-v1/adapter.db
+  --state ~/brain/brain/data/comms-v1/adapter.db
 ```
 
 An `ack_state=stale` entry means the node's handoff window ended before an
@@ -146,38 +141,9 @@ send_to(channel="comms-v1:MACHINE_ID:AGENT_ID", message="...")
 It uses the current persistent brain attachment and returns the node's queued
 message ID. Failed submissions return an error and are not recorded as delivered
 messages in the destination thread. Existing `comms:`, voice, WhatsApp and CLI
-delivery remain unchanged. Legacy discovery/spawn tools continue using the old
-board during this parallel phase.
+delivery remain unchanged.
 
 ## Disable and rollback
-
-### Retiring the legacy broker
-
-After verifying the v1 brain adapter and installing the new default `comms` CLI,
-retire the parallel legacy ingress with the separately invoked migration:
-
-```sh
-python3 integration/brain/retire_legacy.py --root /home/joaohts/voice-assistant \
-  --backup-dir /home/joaohts/.local/state/comms/brain-backups
-```
-
-This removes the legacy polling thread from startup, routes both `comms:` and
-`comms-v1:` channel names through the new adapter, and uses compact structured
-discovery plus immutable recipients for spawned-agent tasks. Task submissions
-carry a stable ID; an ambiguous failure is reported for inspection, not replayed
-or called successful. Ordinary future adapter updates preserve this retirement.
-
-Voice announcements continue through localhost HTTP. A failed voice request is
-reported as unavailable; the removed board fallback cannot falsely claim delivery.
-The voice daemon's transitional polling can be retired with the separate
-`integration/voice/retire_legacy_voice.py` utility. Both migrations preflight and
-back up source without reading secrets, touching model databases, or restarting
-services. Restart the brain and voice user units after coordinated installation;
-never restart openclaw-gateway to perform this migration.
-
-The returned backup directory supports rollback through `patch_brain.py
---rollback`. Retain the legacy broker database separately; do not import it into
-the node or overwrite either database with the other format.
 
 ### Disabling the new adapter
 
@@ -192,7 +158,7 @@ python3 integration/brain/patch_brain.py --rollback /path/to/printed/backup
 
 Rollback first verifies all installed checksums and refuses to overwrite later
 edits. It restores only the three adapter/hook files; it leaves secrets, model
-data, legacy history, node state and the journal untouched.
+data, node state and the journal untouched.
 
 ## Tests
 

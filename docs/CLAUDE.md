@@ -95,7 +95,6 @@ SDK's `Run` lifecycle. SIGINT and SIGTERM both exited cleanly in approximately
 TUI nor MCP child running; the saved identity remained offline. The temporary
 node was stopped afterward.
 
-João selected `channel` as the default on this work Mac. Unconfigured nodes
-still default to `monitor`. Startup channel admission remains specific to each
+Unconfigured nodes default to `monitor`. Startup channel admission remains specific to each
 Claude installation; remote/global broker delivery was outside this isolated
 test. The earlier Node.js proof of concept is separate from these Go results.

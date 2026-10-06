@@ -153,5 +153,4 @@ survive restarts. See [brain integration](docs/BRAIN.md).
 - History inspection does not consume messages. Completed local history remains
   until explicitly pruned; minimal replay records survive until message expiry.
 
-See [implementation plan](docs/IMPLEMENTATION.md), [API](docs/API.md), and
-[verification matrix](docs/VERIFICATION.md).
+See [API](docs/API.md) and [broker contract](docs/BROKER-CONTRACT.md).
