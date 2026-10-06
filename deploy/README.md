@@ -8,16 +8,16 @@ The installer uses the platform's Python 3 for safe service-file generation.
 
 ## Verify and install a pinned release
 
-Download the platform archive and `SHA256SUMS` from the same GitHub release. For
-a private repository, use your existing `gh` login; never embed a token in the
-binary, installer, URL, or Agent Monitor bundle:
+Download the platform archive and `SHA256SUMS` from the same GitHub release:
 
 ```sh
-gh release download v0.1.5 --repo joaohts/comms \
-  --pattern comms_Linux_arm64.tar.gz --pattern SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS
-tar -xzf comms_Linux_arm64.tar.gz
-./scripts/install.sh
+version=v0.1.6
+archive=comms_Linux_arm64.tar.gz   # or comms_Linux_amd64 / comms_Darwin_arm64 / comms_Darwin_amd64
+base=https://github.com/joaohts/comms/releases/download/$version
+curl -fLO "$base/$archive" -fLO "$base/SHA256SUMS"
+grep " $archive\$" SHA256SUMS | shasum -a 256 -c -
+tar -xzf "$archive"
+bash scripts/install.sh
 ```
 
 On macOS, select `comms_Darwin_arm64.tar.gz` or `comms_Darwin_amd64.tar.gz`. Verify

@@ -12,7 +12,7 @@ stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 cd "$repo_dir"
 
-for tuple in Darwin:darwin:arm64 Darwin:darwin:amd64 Linux:linux:arm64; do
+for tuple in Darwin:darwin:arm64 Darwin:darwin:amd64 Linux:linux:arm64 Linux:linux:amd64; do
   IFS=: read -r os_name go_os go_arch <<< "$tuple"
   artifact="comms_${os_name}_${go_arch}.tar.gz"
   root="$stage/${os_name}_${go_arch}"
