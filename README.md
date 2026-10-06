@@ -46,14 +46,15 @@ updating the viewer's pin is an explicit reviewed change, with no automatic
 download of a moving `latest` binary.
 
 ```sh
-gh release download v0.1.5 --repo joaohts/comms \
-  --pattern comms_Linux_arm64.tar.gz --pattern SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS
-tar -xzf comms_Linux_arm64.tar.gz
+version=v0.1.6
+archive=comms_Linux_arm64.tar.gz   # or comms_Linux_amd64 / comms_Darwin_arm64 / comms_Darwin_amd64
+base=https://github.com/joaohts/comms/releases/download/$version
+curl -fLO "$base/$archive" -fLO "$base/SHA256SUMS"
+grep " $archive\$" SHA256SUMS | shasum -a 256 -c -
+tar -xzf "$archive"
 bash scripts/install.sh
 ```
 
-For a legacy installation, use `--binary-name comms-v1 --skip-skills` first.
 See [installation and rollback](deploy/README.md) before changing the existing
 command or receiver. Existing plaintext history is not imported.
 
