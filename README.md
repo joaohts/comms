@@ -46,7 +46,7 @@ updating the viewer's pin is an explicit reviewed change, with no automatic
 download of a moving `latest` binary.
 
 ```sh
-version=v0.1.6
+version=v0.1.7
 archive=comms_Linux_arm64.tar.gz   # or comms_Linux_amd64 / comms_Darwin_arm64 / comms_Darwin_amd64
 base=https://github.com/joaohts/comms/releases/download/$version
 curl -fLO "$base/$archive" -fLO "$base/SHA256SUMS"
