@@ -161,7 +161,7 @@ def rollback(backup):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", default=str(Path.home() / "voice-assistant"))
+    parser.add_argument("--root", default=str(Path.home() / "brain"))
     parser.add_argument("--backup-dir")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--rollback", metavar="BACKUP_DIRECTORY")

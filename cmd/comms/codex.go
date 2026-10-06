@@ -44,6 +44,10 @@ func (a *app) codex(ctx context.Context, cfg comms.Config, socket string, args [
 	if err := checkCodexVersion(ctx, executable); err != nil {
 		return err
 	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("read Codex launch directory: %w", err)
+	}
 	dataDir, err := filepath.Abs(cfg.DataDir)
 	if err != nil {
 		return err
@@ -63,7 +67,7 @@ func (a *app) codex(ctx context.Context, cfg comms.Config, socket string, args [
 	if err != nil {
 		return err
 	}
-	argv, environment := codexLaunchArguments(executable, commsBin, dataDir, socket, target, os.Getpid(), args, os.Environ())
+	argv, environment := codexLaunchArguments(executable, commsBin, dataDir, socket, target, cwd, os.Getpid(), args, os.Environ())
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -108,7 +112,7 @@ func checkCodexVersion(ctx context.Context, executable string) error {
 	return nil
 }
 
-func codexLaunchArguments(executable, commsBin, dataDir, socket, target string, pid int, args, environment []string) ([]string, []string) {
+func codexLaunchArguments(executable, commsBin, dataDir, socket, target, cwd string, pid int, args, environment []string) ([]string, []string) {
 	values := []struct{ key, value string }{
 		{"COMMS_HARNESS_PID", strconv.Itoa(pid)},
 		{"COMMS_CODEX_TARGET", target},
@@ -119,13 +123,22 @@ func codexLaunchArguments(executable, commsBin, dataDir, socket, target string, 
 	// Place our overrides after user config overrides but before an optional
 	// end-of-options marker. Preserve every original argument verbatim.
 	boundary := len(args)
+	hasDirectory := false
 	for i, arg := range args {
 		if arg == "--" {
 			boundary = i
 			break
 		}
+		if arg == "--cd" || strings.HasPrefix(arg, "--cd=") || strings.HasPrefix(arg, "-C") {
+			hasDirectory = true
+		}
 	}
 	argv := []string{executable, "--remote", target}
+	if !hasDirectory {
+		// Remote sessions otherwise inherit the shared app-server's data
+		// directory instead of the directory where this launcher was invoked.
+		argv = append(argv, "--cd", cwd)
+	}
 	argv = append(argv, args[:boundary]...)
 	environment = cleanCodexEnvironment(environment)
 	for _, entry := range values {

@@ -100,10 +100,11 @@ func TestCodexLauncherHelperProcess(t *testing.T) {
 		os.Exit(0)
 	}
 	values := map[string]string{}
-	for _, key := range []string{"COMMS_HARNESS_PID", "COMMS_CODEX_TARGET", "COMMS_DATA_DIR", "COMMS_SOCKET", "COMMS_BIN", "COMMS_AGENT", "CODEX_THREAD_ID"} {
+	for _, key := range []string{"COMMS_HARNESS_PID", "COMMS_CODEX_TARGET", "COMMS_DATA_DIR", "COMMS_SOCKET", "COMMS_BIN", "COMMS_AGENT", "CODEX_THREAD_ID", "COMMS_CLAUDE_RECEIVER"} {
 		values[key] = os.Getenv(key)
 	}
-	out, _ := json.Marshal(map[string]any{"pid": os.Getpid(), "args": args, "environment": values})
+	cwd, _ := os.Getwd()
+	out, _ := json.Marshal(map[string]any{"pid": os.Getpid(), "args": args, "environment": values, "cwd": cwd})
 	if err := os.WriteFile(os.Getenv("COMMS_LAUNCHER_TEST_CAPTURE"), out, 0600); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
@@ -153,8 +154,8 @@ func cleanupOwnedLauncher(t *testing.T, data string) {
 
 func TestCodexLauncherPreservesArgumentsAndControlsOnlyTransport(t *testing.T) {
 	args := []string{"resume", "01a0a4cb-2147-7231-a8a5-d1e17b40c048", "-m", "user-selected-model", "-c", `model_reasoning_effort="high"`, "--", "a prompt with `literal` $(text)"}
-	argv, env := codexLaunchArguments("/bin/codex", "/bin/comms", "/data with spaces", "/custom/node.sock", "unix:///data/control.sock", 123, args, []string{"PATH=/bin", "COMMS_AGENT=old", "COMMS_SESSION_ID=old", "CODEX_THREAD_ID=old", "AUTH_TEST_VALUE=preserved"})
-	if !reflect.DeepEqual(argv[3:9], args[:6]) {
+	argv, env := codexLaunchArguments("/bin/codex", "/bin/comms", "/data with spaces", "/custom/node.sock", "unix:///data/control.sock", "/project", 123, args, []string{"PATH=/bin", "COMMS_AGENT=old", "COMMS_SESSION_ID=old", "CODEX_THREAD_ID=old", "AUTH_TEST_VALUE=preserved"})
+	if !reflect.DeepEqual(argv[5:11], args[:6]) {
 		t.Fatalf("Codex arguments changed: %#v", argv)
 	}
 	if !reflect.DeepEqual(argv[len(argv)-2:], args[len(args)-2:]) {
@@ -186,15 +187,57 @@ func TestCodexLauncherPreservesArgumentsAndControlsOnlyTransport(t *testing.T) {
 	}
 }
 
+func TestCodexLauncherWorkingDirectory(t *testing.T) {
+	const cwd = "/project with spaces and $literal"
+	for _, tc := range []struct {
+		name        string
+		args        []string
+		wantDefault bool
+	}{
+		{"new", nil, true},
+		{"resume", []string{"resume", "thread"}, true},
+		{"short", []string{"-C", "../chosen"}, false},
+		{"short attached", []string{"-C../chosen"}, false},
+		{"short equals", []string{"-C=../chosen"}, false},
+		{"long", []string{"--cd", "/chosen project"}, false},
+		{"long equals", []string{"--cd=/chosen project"}, false},
+		{"resume override", []string{"resume", "thread", "-C", "/chosen"}, false},
+		{"literal prompt", []string{"--", "--cd=/literal"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			argv, _ := codexLaunchArguments("/bin/codex", "/bin/comms", "/data", "/data/node.sock", "unix:///data/control.sock", cwd, 123, tc.args, nil)
+			offset := 3
+			if tc.wantDefault {
+				if !reflect.DeepEqual(argv[offset:offset+2], []string{"--cd", cwd}) {
+					t.Fatalf("missing launch directory: %#v", argv)
+				}
+				offset += 2
+			}
+			if len(tc.args) > 0 && tc.args[0] == "--" {
+				if !reflect.DeepEqual(argv[len(argv)-len(tc.args):], tc.args) {
+					t.Fatalf("literal prompt changed: %#v", argv)
+				}
+			} else if len(tc.args) > 0 && !reflect.DeepEqual(argv[offset:offset+len(tc.args)], tc.args) {
+				t.Fatalf("explicit arguments changed: %#v", argv)
+			}
+		})
+	}
+}
+
 func TestCodexLauncherExecKeepsPIDAndServiceSurvivesTUIExit(t *testing.T) {
 	dir, _, environment := launcherFixture(t)
 	data := filepath.Join(dir, "data")
+	workspace := filepath.Join(dir, "project with spaces")
+	if err := os.Mkdir(workspace, 0700); err != nil {
+		t.Fatal(err)
+	}
 	cleanupOwnedLauncher(t, data)
 	capture := filepath.Join(dir, "capture.json")
 	environment = setEnvironment(environment, "COMMS_LAUNCHER_HELPER", "launcher")
 	environment = setEnvironment(environment, "COMMS_LAUNCHER_TEST_CAPTURE", capture)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestCodexLauncherHelperProcess$", "--", "--data-dir", data, "codex", "resume", "owned-thread", "--json", "-c", `model_reasoning_effort="high"`)
-	cmd.Env = environment
+	cmd.Env = setEnvironment(environment, "PWD", workspace)
+	cmd.Dir = workspace
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -226,6 +269,10 @@ func TestCodexLauncherExecKeepsPIDAndServiceSurvivesTUIExit(t *testing.T) {
 	if got.Environment["COMMS_DATA_DIR"] != data {
 		t.Fatalf("wrong node data directory: %+v", got)
 	}
+	wantDirectory := []string{"--cd", workspace}
+	if len(got.Args) < 4 || !reflect.DeepEqual(got.Args[2:4], wantDirectory) {
+		t.Fatalf("launcher did not forward the invoking directory: %#v", got.Args)
+	}
 	target := got.Environment["COMMS_CODEX_TARGET"]
 	if err := codex.ValidateServer(context.Background(), target); err != nil {
 		t.Fatalf("server died with TUI: %v", err)
@@ -240,6 +287,34 @@ func TestCodexLauncherExecKeepsPIDAndServiceSurvivesTUIExit(t *testing.T) {
 	}
 	if record.PID == pid {
 		t.Fatal("server and TUI share lifecycle PID")
+	}
+
+	// A later launch from another folder must use that folder even though the
+	// shared server was already started from its separate data directory.
+	otherWorkspace := filepath.Join(dir, "another project")
+	if err := os.Mkdir(otherWorkspace, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command(os.Args[0], "-test.run=^TestCodexLauncherHelperProcess$", "--", "--data-dir", data, "codex")
+	cmd.Env = setEnvironment(environment, "PWD", otherWorkspace)
+	cmd.Dir = otherWorkspace
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("second launcher failed: %v %s", err, output)
+	}
+	b, err = os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	wantDirectory = []string{"--cd", otherWorkspace}
+	if len(got.Args) < 4 || !reflect.DeepEqual(got.Args[2:4], wantDirectory) {
+		t.Fatalf("reused server lost the new invoking directory: %#v", got.Args)
+	}
+	reused, err := readCodexRecord(filepath.Join(data, "codex", "server.json"), target)
+	if err != nil || reused == nil || *reused != *record {
+		t.Fatalf("second launcher replaced the server: %+v %v", reused, err)
 	}
 }
 

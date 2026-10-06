@@ -310,7 +310,37 @@ func nodeDecode(w http.ResponseWriter, r *http.Request, out any) error {
 func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, r *http.Request) {
-		nodeJSON(w, 200, map[string]any{"version": Version, "api_version": ProtocolVersion, "machine_id": n.Store.Identity.MachineID, "public_key": n.Store.Identity.PublicKey, "identity": n.Store.Identity, "name": n.Store.Setting("name"), "broker_enabled": n.broker != nil, "broker_connected": n.brokerOnline.Load(), "broker_service_key_configured": n.cfg.BrokerServiceKey != "", "broker_url": n.Store.Setting("broker_url"), "data_dir": n.cfg.DataDir})
+		claude, err := n.Store.ClaudeSettings()
+		if err != nil {
+			nodeError(w, err)
+			return
+		}
+		nodeJSON(w, 200, map[string]any{"version": Version, "api_version": ProtocolVersion, "machine_id": n.Store.Identity.MachineID, "public_key": n.Store.Identity.PublicKey, "identity": n.Store.Identity, "name": n.Store.Setting("name"), "broker_enabled": n.broker != nil, "broker_connected": n.brokerOnline.Load(), "broker_service_key_configured": n.cfg.BrokerServiceKey != "", "broker_url": n.Store.Setting("broker_url"), "data_dir": n.cfg.DataDir, "claude_receiver": claude.Receiver})
+	})
+	mux.HandleFunc("GET /v1/claude", func(w http.ResponseWriter, r *http.Request) {
+		settings, err := n.Store.ClaudeSettings()
+		if err != nil {
+			nodeError(w, err)
+			return
+		}
+		nodeJSON(w, 200, settings)
+	})
+	mux.HandleFunc("PUT /v1/claude", func(w http.ResponseWriter, r *http.Request) {
+		var settings ClaudeSettings
+		if err := nodeDecode(w, r, &settings); err != nil {
+			nodeError(w, err)
+			return
+		}
+		if !ValidClaudeReceiver(settings.Receiver) {
+			nodeError(w, problem(400, "bad_claude_receiver", "Claude receiver must be monitor or channel"))
+			return
+		}
+		if err := n.Store.SetSetting("claude_receiver", settings.Receiver); err != nil {
+			nodeError(w, err)
+			return
+		}
+		nodeJSON(w, 200, settings)
+		n.publish("configuration")
 	})
 	mux.HandleFunc("PUT /v1/name", func(w http.ResponseWriter, r *http.Request) {
 		var q struct {
@@ -660,6 +690,11 @@ func (n *Node) stream(w http.ResponseWriter, r *http.Request) {
 		nodeError(w, problem(409, "native_receiver", "Codex delivery uses its native tool-output receiver"))
 		return
 	}
+	channel := r.URL.Query().Get("receiver") == ClaudeReceiverChannel
+	if channel != (s.Harness == "claude" && s.Target == ClaudeChannelTarget) {
+		nodeError(w, problem(409, "receiver_mismatch", "use the receiver selected for this attachment; reopen comms after changing Claude's launch mode"))
+		return
+	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	recv := &receiver{s, make(chan Event, 1), ctx, cancel}
@@ -712,7 +747,7 @@ func (n *Node) stream(w http.ResponseWriter, r *http.Request) {
 			controller.SetWriteDeadline(time.Time{})
 		case <-ping.C:
 			current, e := n.Store.Session(s.ID)
-			if e != nil || current.EndedAt != nil {
+			if e != nil || current.EndedAt != nil || current.Target != s.Target {
 				return
 			}
 			controller.SetWriteDeadline(time.Now().Add(5 * time.Second))

@@ -20,13 +20,10 @@ for tuple in Darwin:darwin:arm64 Darwin:darwin:amd64 Linux:linux:arm64; do
   CGO_ENABLED=0 GOOS="$go_os" GOARCH="$go_arch" go build -trimpath -ldflags "-s -w -X main.version=$release_version -X github.com/joaohts/comms/internal/comms.Version=$release_version" -o "$root/comms" ./cmd/comms
   cp scripts/install.sh "$root/scripts/"
   cp -R integration/open-comms "$root/integration/"
+  cp integration/claude-alias.py "$root/integration/"
   if [[ -d integration/brain ]]; then
     mkdir -p "$root/integration/brain"
-    cp integration/brain/comms_v1.py integration/brain/patch_brain.py integration/brain/retire_legacy.py "$root/integration/brain/"
-  fi
-  if [[ -d integration/voice ]]; then
-    mkdir -p "$root/integration/voice"
-    cp integration/voice/retire_legacy_voice.py integration/voice/README.md "$root/integration/voice/"
+    cp integration/brain/comms_v1.py integration/brain/patch_brain.py "$root/integration/brain/"
   fi
   cp deploy/README.md "$root/deploy/"
   printf '%s\n' "$release_version" > "$root/VERSION"

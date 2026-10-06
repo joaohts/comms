@@ -22,6 +22,7 @@ start=1
 service=1
 skills=1
 codex_alias=1
+claude_alias=1
 replace_legacy=0
 skill_backup_root="${XDG_STATE_HOME:-$HOME/.local/state}/comms/skill-backups"
 
@@ -90,6 +91,7 @@ Usage: scripts/install.sh [options]
   --replace-legacy      Explicitly back up and replace legacy CLI/skill files
   --skip-skills         Do not install open-comms integrations or shell alias
   --skip-codex-alias     Do not configure the Codex shell shortcut
+  --skip-claude-alias    Do not configure the Claude shell shortcut
   --no-service          Install files without registering a supervisor
   --no-start            Register service but do not start/restart it
 EOF
@@ -110,6 +112,7 @@ while (($#)); do
     --replace-legacy) replace_legacy=1; shift ;;
     --skip-skills) skills=0; shift ;;
     --skip-codex-alias) codex_alias=0; shift ;;
+    --skip-claude-alias) claude_alias=0; shift ;;
     --no-service) service=0; start=0; shift ;;
     --no-start) start=0; shift ;;
     --help|-h) usage; exit 0 ;;
@@ -216,29 +219,27 @@ if (( skills )); then
     fi
     mkdir -p "$skill_dir"
     install -m 644 "$bundle_dir/integration/open-comms/SKILL.md" "$skill_dir/SKILL.md"
-    # Bind every executable example, including the Monitor JSON string and
-    # Codex launcher, to this installed file rather than an ambiguous PATH name.
+    # Use short command names in the skill, preserving a distinct name when
+    # this installation still coexists with another comms executable.
     python3 - "$skill_dir/SKILL.md" "$target" "$skill_name" 'comms installer managed skill' <<'PY'
 # BEGIN COMMS_SKILL_RENDER
 import json,pathlib,re,sys
-p=pathlib.Path(sys.argv[1]); command=str(pathlib.Path(sys.argv[2]).absolute())
-skill,marker=sys.argv[3:5]; label=pathlib.Path(command).name
-escaped=re.sub(r'([\\$`"])',r'\\\1',command)
-resolver='${COMMS_BIN:-"'+escaped+'"}'
-executable='"'+resolver+'"'
+p=pathlib.Path(sys.argv[1]); command=pathlib.Path(sys.argv[2]).absolute()
+skill,marker=sys.argv[3:5]; label=command.name
+short=command.with_name('comms')
+if short.is_file() and short.samefile(command):
+    label='comms'
 text=p.read_text().replace('name: open-comms\n','name: '+skill+'\n',1)
-preamble='Resolve the CLI from `COMMS_BIN` when set, otherwise use `comms`. In all\ncommands below, `comms` means that resolved executable. Quote the executable\nas `"${COMMS_BIN:-comms}"` in shell commands; never overwrite PATH or fall back\nto a legacy board when the new node is unavailable.\n'
-text=text.replace(preamble,'Resolve the CLI from `COMMS_BIN` when set; otherwise use `'+command+'`.\nIn prose, `'+label+'` names that executable. Shell examples honor the same override.\nNever change PATH or fall back to a legacy board when the node is unavailable.\n',1)
+# Older release bundles still contain the former executable resolver.
+old_preamble='Resolve the CLI from `COMMS_BIN` when set, otherwise use `comms`. In all\ncommands below, `comms` means that resolved executable. Quote the executable\nas `"${COMMS_BIN:-comms}"` in shell commands; never overwrite PATH or fall back\nto a legacy board when the new node is unavailable.\n\n'
+text=text.replace(old_preamble,'',1)
 def monitor(match):
-    value=json.loads(match.group('command')).replace('${COMMS_BIN:-comms}',resolver)
-    value=re.sub(r'^comms(?=\s|$)',lambda _:executable,value)
+    value=json.loads(match.group('command')).replace('"${COMMS_BIN:-comms}"','comms')
+    value=re.sub(r'^comms(?=\s|$)',lambda _:label,value)
     return match.group('prefix')+json.dumps(value,ensure_ascii=False)
 text=re.sub(r'(?P<prefix>Monitor\(\{\s*command:\s*)(?P<command>"(?:\\.|[^"\\])*")',monitor,text)
-text=text.replace('${COMMS_BIN:-comms}',resolver)
-text=re.sub(r'(?m)^comms(?=\s)',lambda _:executable,text)
+text=re.sub(r'(?m)^comms(?=\s)',lambda _:label,text)
 text=re.sub(r'`comms(?= |`)',lambda _:'`'+label,text)
-codex_sentence='**Codex:** launch or explicitly resume through `'+label+' codex` first.'
-text=text.replace(codex_sentence,codex_sentence+'\n\n```sh\n'+executable+' codex\n```\n',1)
 text+='\n<!-- '+marker+' -->\n'
 p.write_text(text)
 # END COMMS_SKILL_RENDER
@@ -288,6 +289,10 @@ if shell == 'bash':
     print('Bash login shells must source ~/.bashrc to load the shortcut.')
 # END COMMS_CODEX_ALIAS
 PYALIAS
+fi
+
+if (( skills && claude_alias )); then
+  python3 "$bundle_dir/integration/claude-alias.py" "$target"
 fi
 
 args=(serve --data-dir "$data_dir")

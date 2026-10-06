@@ -1,4 +1,4 @@
-"""Optional, durable comms-v1 ingress for the existing Joana brain.
+"""Optional, durable comms-v1 ingress for the brain.
 
 Only Python's standard library is used. The local node owns identity, grants,
 encryption and transport; this adapter owns admission into the brain's work queue.
