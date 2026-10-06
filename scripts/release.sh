@@ -38,8 +38,8 @@ done
 
 (
   cd "$output_dir"
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum comms_Darwin_arm64.tar.gz comms_Darwin_amd64.tar.gz comms_Linux_arm64.tar.gz > SHA256SUMS
-  else shasum -a 256 comms_Darwin_arm64.tar.gz comms_Darwin_amd64.tar.gz comms_Linux_arm64.tar.gz > SHA256SUMS
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum comms_*.tar.gz > SHA256SUMS
+  else shasum -a 256 comms_*.tar.gz > SHA256SUMS
   fi
 )
 printf 'Release %s artifacts ready in %s\n' "$release_version" "$output_dir"

@@ -11,7 +11,7 @@ The installer uses the platform's Python 3 for safe service-file generation.
 Download the platform archive and `SHA256SUMS` from the same GitHub release:
 
 ```sh
-version=v0.1.6
+version=v0.1.7
 archive=comms_Linux_arm64.tar.gz   # or comms_Linux_amd64 / comms_Darwin_arm64 / comms_Darwin_amd64
 base=https://github.com/joaohts/comms/releases/download/$version
 curl -fLO "$base/$archive" -fLO "$base/SHA256SUMS"
