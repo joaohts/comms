@@ -21,10 +21,6 @@ for tuple in Darwin:darwin:arm64 Darwin:darwin:amd64 Linux:linux:arm64 Linux:lin
   cp scripts/install.sh "$root/scripts/"
   cp -R integration/open-comms "$root/integration/"
   cp integration/claude-alias.py "$root/integration/"
-  if [[ -d integration/brain ]]; then
-    mkdir -p "$root/integration/brain"
-    cp integration/brain/comms_v1.py integration/brain/patch_brain.py "$root/integration/brain/"
-  fi
   cp deploy/README.md "$root/deploy/"
   printf '%s\n' "$release_version" > "$root/VERSION"
   python3 - "$root" <<'PY'

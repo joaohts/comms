@@ -30,10 +30,8 @@ Download a platform archive and `SHA256SUMS` from a tagged release, verify the
 checksum, extract, and run `scripts/install.sh`. The installer sets up a per-user
 background node independently of Agent Monitor. Linux ARM64 and macOS ARM64/x64
 artifacts include the executable and integration skill; no Go compiler is needed.
-The installer configures `codex` and `claude` shell aliases for zsh/bash so new
-terminal sessions launch through comms. Use `--skip-codex-alias` or
-`--skip-claude-alias` to opt out; see
-[shell setup and bypass commands](deploy/README.md#verify-and-install-a-pinned-release).
+The CLI is installed to `~/.local/bin/comms`; make sure `~/.local/bin` is on your
+`PATH`.
 
 Packaged Agent Monitor applications include the verified binary and need no
 runtime GitHub token.
@@ -55,8 +53,37 @@ tar -xzf "$archive"
 bash scripts/install.sh
 ```
 
-See [installation and rollback](deploy/README.md) before changing the existing
-command or receiver. Existing plaintext history is not imported.
+See [installation and rollback](deploy/README.md) for defaults, updates, and
+running your own broker.
+
+### Shell aliases
+
+The installer adds two managed aliases to your zsh (`~/.zshrc`) or bash
+(`~/.bashrc`) configuration so new terminal sessions launch through comms and can
+receive peer messages:
+
+- `claude` runs `comms claude`
+- `codex` runs `comms codex`
+
+Existing custom `claude`/`codex` aliases or functions are left alone. Bypass the
+alias for one command with `command claude ...` or `command codex ...`. Opt out at
+install time with `--skip-claude-alias` and/or `--skip-codex-alias`. To remove an
+alias later, delete its `# BEGIN COMMS CLAUDE ALIAS` / `# BEGIN COMMS CODEX ALIAS`
+block (through the matching `# END` line) from the shell config, then run
+`unalias claude` or `unalias codex` in open shells.
+
+### Build from source
+
+Requires Go (version from `go.mod`, currently 1.27.1). The installer also needs
+Python 3.
+
+```sh
+go build ./cmd/comms
+go test ./...
+bash scripts/install.sh --binary ./comms
+```
+
+`--binary` skips the release checksum check, which applies only to release bundles.
 
 ## Local agents
 
@@ -113,6 +140,8 @@ comms log pi:brain
 ```
 
 The reverse direction requires a separate grant. Pairing alone grants nothing.
+Once granted, a peer's messages to your agents are delivered into your live Claude
+Code and Codex sessions (those launched through `comms claude` / `comms codex`).
 An operator may also require a shared service API key, including for registration.
 Configure its private file on both broker and consumer nodes with the installer's
 `--broker-service-key-file PATH`; updates preserve it. This additional gate does

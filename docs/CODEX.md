@@ -71,7 +71,7 @@ not start a separate Codex `comms stream` or terminal-injection listener.
    shells are spawned by the shared app-server. Codex itself supplies the
    current `CODEX_THREAD_ID`. Refresh the PID override on every explicit resume.
    The launcher also supplies `COMMS_DATA_DIR`, `COMMS_SOCKET`, and `COMMS_BIN`
-   so tool calls use the intended node and versioned CLI during legacy overlap.
+   so tool calls use the intended node and CLI.
    Integrations should invoke `"$COMMS_BIN"` when it is available. Stale inherited
    parent-session identity variables are removed.
    The [shell environment policy](https://learn.chatgpt.com/docs/config-file/config-sample)
@@ -97,23 +97,16 @@ and inbox survive attachment closure. A node restart preserves an attachment
 whose actual owning process still exists.
 
 Codex 0.154.0 rejects explicit permission overrides when resuming a remote
-thread. Do not append `-a`, `-s`, or bypass flags during migration/resume; retain
-the saved settings. The per-thread environment overrides above were directly
-tested on both new remote sessions and resume.
+thread. Do not append `-a`, `-s`, or bypass flags on resume; retain
+the saved settings.
 
-## Existing sessions and legacy migration
+## Existing sessions
 
 A normal Codex TUI without an external app-server socket cannot accept this
 delivery method. It must not be marked ready or silently attached to another
 process. Finish or pause work, exit that TUI normally, then explicitly resume its
 saved UUID using `comms codex resume <uuid>` and reopen comms. Do not keep two
-live owners of the same session. The saved Codex conversation is retained;
-legacy comms history remains separate as specified in the migration guide.
-
-The Homebrew Codex 0.154.0 executable supports direct `codex app-server --listen
-unix:///...` launch. Its `app-server daemon start` command can fail because that
-managed-daemon path expects Codex's standalone installation. The comms launcher
-must not depend on that command succeeding or replace the user's Codex install.
+live owners of the same session. The saved Codex conversation is retained.
 
 ## Delivery result and provenance
 
