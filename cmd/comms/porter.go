@@ -13,8 +13,8 @@ import (
 	"github.com/joaohts/comms/internal/porter"
 )
 
-// porter is local-only for now: it records agent state reported by
-// integrations and does not need the node.
+// porter records agent state reported by integrations and does not need the
+// node. A node started with serve --porter publishes the changes to peers.
 func (a *app) porter(dataDir string, args []string) error {
 	if len(args) == 0 {
 		return usageError("porter requires a subcommand: event | status")

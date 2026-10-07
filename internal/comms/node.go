@@ -189,6 +189,10 @@ func (n *Node) Start(parent context.Context) error {
 	go func() { defer n.background.Done(); n.scheduler() }()
 	go func() { defer n.background.Done(); n.maintenance() }()
 	go func() { defer n.background.Done(); n.brokerLoop() }()
+	if n.cfg.Porter {
+		n.background.Add(1)
+		go func() { defer n.background.Done(); n.runPorter() }()
+	}
 	n.notify()
 	return nil
 }

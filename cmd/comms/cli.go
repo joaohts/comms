@@ -786,6 +786,7 @@ func (a *app) serve(ctx context.Context, cfg comms.Config, args []string) error 
 	f.DurationVar(&cfg.Lease, "lease", cfg.Lease, "")
 	f.DurationVar(&cfg.Drain, "drain", cfg.Drain, "")
 	f.BoolVar(&cfg.AllowInsecure, "allow-insecure", false, "")
+	f.BoolVar(&cfg.Porter, "porter", false, "publish porter agent state to subscribed peers")
 	f.IntVar(&cfg.LocalCount, "local-count", cfg.LocalCount, "")
 	f.Int64Var(&cfg.LocalBytes, "local-bytes", cfg.LocalBytes, "")
 	f.IntVar(&cfg.BrokerCount, "broker-count", cfg.BrokerCount, "")
@@ -819,7 +820,8 @@ func (a *app) serve(ctx context.Context, cfg comms.Config, args []string) error 
 func (a *app) help() error {
 	_, err := fmt.Fprint(a.out, `comms — local-first encrypted agent communication
 
-  serve [--broker-listen HOST:PORT]      Run local node and optional broker
+  serve [--broker-listen HOST:PORT] [--porter]
+                                      Run local node, optional broker and porter
   codex [resume THREAD] [CODEX OPTIONS] Launch native tool-output Codex comms
   claude [CLAUDE OPTIONS]              Launch Claude with the node's receiver mode
   claude-receiver [monitor|channel]    Read or set Claude's mode for future launches

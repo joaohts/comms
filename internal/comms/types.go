@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"time"
+
+	"github.com/joaohts/comms/internal/porter"
 )
 
 var Version = "0.1.0-dev"
@@ -39,6 +41,9 @@ type Config struct {
 	AllowInsecure        bool
 	BrokerServiceKey     string `json:"-"`
 	BrokerServiceKeyFile string `json:"-"`
+	// Porter publishes local agent state to subscribed peers (opt-in).
+	Porter     bool
+	PorterPush porter.Pusher `json:"-"`
 }
 
 func DefaultConfig() Config {

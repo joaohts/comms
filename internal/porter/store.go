@@ -70,11 +70,19 @@ func (s Store) Update(fn func(*State) error) error {
 	if err := fn(st); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(st, "", "  ")
+	return writeJSON(s.Path, st)
+}
+
+// writeJSON replaces path atomically with the indented JSON of v.
+func writeJSON(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(s.Path), ".porter-*.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".porter-*.json")
 	if err != nil {
 		return err
 	}
@@ -86,5 +94,5 @@ func (s Store) Update(fn func(*State) error) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), s.Path)
+	return os.Rename(tmp.Name(), path)
 }
