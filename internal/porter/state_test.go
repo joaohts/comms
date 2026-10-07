@@ -69,11 +69,24 @@ func TestLateEventNeverSubtracts(t *testing.T) {
 	}
 }
 
-func TestEndRemovesAndBadInputRejected(t *testing.T) {
+func TestEndBuriesAndBadInputRejected(t *testing.T) {
 	s := NewState()
 	mustApply(t, s, Event{Agent: "a", Kind: KindPrompt, At: at(0)})
-	if a := mustApply(t, s, Event{Agent: "a", Kind: KindEnd, At: at(1)}); a != nil || len(s.Agents) != 0 {
-		t.Fatal("end did not remove agent")
+	mustApply(t, s, Event{Agent: "sub", Parent: "a", AgentType: "Explore", Kind: KindPrompt, At: at(0)})
+	a := mustApply(t, s, Event{Agent: "a", Kind: KindEnd, At: at(10)})
+	if a.Status != StatusEnded || a.EndReason != EndClosed || a.EndedAt == nil || !a.EndedAt.Equal(at(10)) || a.RunningMS != 10_000 {
+		t.Fatalf("end did not bury agent: %+v", a)
+	}
+	if c := s.Agents["sub"]; c.Status != StatusEnded || c.Parent != "a" || c.AgentType != "Explore" {
+		t.Fatalf("subagent outlived parent: %+v", c)
+	}
+	if a := mustApply(t, s, Event{Agent: "ghost", Kind: KindEnd}); a != nil || s.Agents["ghost"] != nil {
+		t.Fatal("end of unknown agent created it")
+	}
+	// A resumed session leaves the graveyard.
+	a = mustApply(t, s, Event{Agent: "a", Kind: KindPrompt, At: at(20)})
+	if a.Status != StatusRunning || a.EndedAt != nil || a.EndReason != "" {
+		t.Fatalf("resume: %+v", a)
 	}
 	if _, err := s.Apply(Event{Agent: "", Kind: KindPrompt}); err == nil {
 		t.Fatal("empty agent accepted")
@@ -88,9 +101,57 @@ func TestListPutsNeedsYouFirst(t *testing.T) {
 	mustApply(t, s, Event{Agent: "old-needs", Kind: KindNeeds, At: at(0)})
 	mustApply(t, s, Event{Agent: "recent", Kind: KindPrompt, At: at(50)})
 	mustApply(t, s, Event{Agent: "older", Kind: KindStop, At: at(10)})
+	mustApply(t, s, Event{Agent: "dead", Kind: KindPrompt, At: at(60)})
+	mustApply(t, s, Event{Agent: "dead", Kind: KindEnd, At: at(61)})
 	l := s.List()
-	if l[0].ID != "old-needs" || l[1].ID != "recent" || l[2].ID != "older" {
-		t.Fatalf("order: %s %s %s", l[0].ID, l[1].ID, l[2].ID)
+	if l[0].ID != "old-needs" || l[1].ID != "recent" || l[2].ID != "older" || l[3].ID != "dead" {
+		t.Fatalf("order: %s %s %s %s", l[0].ID, l[1].ID, l[2].ID, l[3].ID)
+	}
+	if s.Running() != 1 {
+		t.Fatalf("running=%d", s.Running())
+	}
+}
+
+func TestSweepStaleAndPurge(t *testing.T) {
+	s := NewState()
+	mustApply(t, s, Event{Agent: "quiet", Kind: KindPrompt, At: at(0)})
+	mustApply(t, s, Event{Agent: "busy", Kind: KindPrompt, At: at(0).Add(StaleAfter)})
+	changed, purged := s.Sweep(at(0).Add(StaleAfter + time.Minute))
+	q := s.Agents["quiet"]
+	if !changed || len(purged) != 0 || q.Status != StatusEnded || q.EndReason != EndStale || s.Agents["busy"].Status != StatusRunning {
+		t.Fatalf("stale sweep: %v %v %+v", changed, purged, q)
+	}
+	if changed, _ := s.Sweep(at(0).Add(StaleAfter + 2*time.Minute)); changed {
+		t.Fatal("idempotent sweep reported a change")
+	}
+	_, purged = s.Sweep(q.EndedAt.Add(KeepEnded + time.Second))
+	if len(purged) != 1 || purged[0] != "quiet" || s.Agents["quiet"] != nil {
+		t.Fatalf("purge: %v", purged)
+	}
+}
+
+func TestSpecialSticksToPersistentIdentity(t *testing.T) {
+	s := NewState()
+	a := mustApply(t, s, Event{Agent: "s1", Kind: KindStart, At: at(0)})
+	s.SetIdentity(a, Identity{Alias: "joana", Address: "pi:joana", Persistent: true})
+	s.SetSpecial(a, true)
+	b := mustApply(t, s, Event{Agent: "s2", Kind: KindStart, At: at(1)})
+	if !s.SetIdentity(b, Identity{Alias: "joana", Address: "pi:joana", Persistent: true}) || !b.Special {
+		t.Fatal("special did not follow the persistent identity")
+	}
+	if s.SetIdentity(b, Identity{Alias: "joana", Address: "pi:joana", Persistent: true}) {
+		t.Fatal("unchanged identity reported a change")
+	}
+	c := mustApply(t, s, Event{Agent: "s3", Kind: KindStart, At: at(2)})
+	s.SetIdentity(c, Identity{Alias: "tmp", Address: "pi:tmp"})
+	s.SetSpecial(c, true)
+	d := mustApply(t, s, Event{Agent: "s4", Kind: KindStart, At: at(3)})
+	s.SetIdentity(d, Identity{Alias: "tmp", Address: "pi:tmp"})
+	if d.Special {
+		t.Fatal("ephemeral special leaked to another session")
+	}
+	if v := d.View(); v.Title != "tmp" {
+		t.Fatalf("title fallback: %q", v.Title)
 	}
 }
 

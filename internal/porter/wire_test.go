@@ -18,24 +18,34 @@ import (
 
 const token = "ExponentPushToken[abc_DEF-123]"
 
-func TestParseControl(t *testing.T) {
-	c, err := ParseControl(`{"type":"porter.subscribe","push":{"provider":"expo","token":"` + token + `"},"future":1}`)
+func TestParse(t *testing.T) {
+	c, err := Parse(`{"type":"porter.subscribe","push":{"provider":"expo","token":"` + token + `"},"future":1}`)
 	if err != nil || c.Push == nil || c.Push.Token != token {
 		t.Fatalf("subscribe: %+v %v", c, err)
 	}
-	if c, err = ParseControl(`{"type":"porter.subscribe"}`); err != nil || c.Push != nil {
+	if c, err = Parse(`{"type":"porter.subscribe"}`); err != nil || c.Push != nil || len(c.Topics) != 2 {
 		t.Fatalf("token-less subscribe: %+v %v", c, err)
 	}
-	if c, err = ParseControl(`{"type":"porter.unsubscribe","push":{"provider":"x"}}`); err != nil || c.Push != nil {
+	if c, err = Parse(`{"type":"porter.subscribe","topics":["trusts"]}`); err != nil || len(c.Topics) != 1 {
+		t.Fatalf("topics: %+v %v", c, err)
+	}
+	if c, err = Parse(`{"type":"porter.future","x":1}`); err != nil || c.Type != "porter.future" {
+		t.Fatalf("unknown type must parse: %+v %v", c, err)
+	}
+	if _, err = Parse(`hello`); err != ErrNotPorter {
+		t.Fatalf("non-JSON: %v", err)
+	}
+	if c, err = Parse(`{"type":"porter.unsubscribe","push":{"provider":"x"}}`); err != nil || c.Push != nil {
 		t.Fatalf("unsubscribe: %+v %v", c, err)
 	}
 	for _, bad := range []string{
-		`hello`,
-		`{"type":"porter.agent"}`,
+		`{"type":"porter.set","agent":"x"}`,
+		`{"type":"porter.revoke"}`,
+		`{"type":"porter.answer","id":"ntf_1"}`,
 		`{"type":"porter.subscribe","push":{"provider":"fcm","token":"` + token + `"}}`,
 		`{"type":"porter.subscribe","push":{"provider":"expo","token":"https://evil"}}`,
 	} {
-		if _, err := ParseControl(bad); err == nil {
+		if _, err := Parse(bad); err == nil {
 			t.Fatalf("accepted %s", bad)
 		}
 	}
@@ -51,7 +61,7 @@ func TestDiffAndPushWanted(t *testing.T) {
 		prev[id] = &c
 	}
 	mustApply(t, s, Event{Agent: "a", Kind: KindNeeds, At: at(5), Needs: &Needs{Kind: "permission", Text: "Bash: ls"}})
-	mustApply(t, s, Event{Agent: "b", Kind: KindEnd, At: at(5)})
+	delete(s.Agents, "b")
 	mustApply(t, s, Event{Agent: "c", Kind: KindStart, At: at(5)})
 	changed, removed := Diff(prev, s.Agents)
 	if len(changed) != 2 || len(removed) != 1 || removed[0] != "b" {
@@ -96,12 +106,12 @@ func TestSnapshotTruncatesToLimit(t *testing.T) {
 		mustApply(t, s, Event{Agent: string(rune('A' + i)), Kind: KindPrompt, At: at(i), Summary: strings.Repeat("x", 200)})
 	}
 	mustApply(t, s, Event{Agent: "needs", Kind: KindNeeds, At: at(0)})
-	snap := NewSnapshot("mac", s, 4096)
+	snap := NewSnapshot("mac", TopicAgents, AgentItems(s), 4096)
 	b, _ := json.Marshal(snap)
-	if !snap.Truncated || len(b) > 4096 || snap.Agents[0].ID != "needs" || snap.Type != TypeSnapshot {
-		t.Fatalf("truncated=%v size=%d first=%s", snap.Truncated, len(b), snap.Agents[0].ID)
+	if !snap.Truncated || len(b) > 4096 || snap.Items[0].(Agent).ID != "needs" || snap.Type != TypeSnapshot || snap.Topic != TopicAgents || snap.V != 1 {
+		t.Fatalf("truncated=%v size=%d first=%+v", snap.Truncated, len(b), snap.Items[0])
 	}
-	if full := NewSnapshot("mac", s, 1<<20); full.Truncated || len(full.Agents) != 51 {
+	if full := NewSnapshot("mac", TopicAgents, AgentItems(s), 1<<20); full.Truncated || len(full.Items) != 51 {
 		t.Fatal("unexpected truncation")
 	}
 }
@@ -112,7 +122,7 @@ func TestSubscribersRoundTrip(t *testing.T) {
 	if err != nil || len(m) != 0 {
 		t.Fatalf("empty load: %v %v", m, err)
 	}
-	m["m_phone"] = Subscriber{Peer: "m_phone", Agent: "a_1", Push: &Push{"expo", token}, Since: t0}
+	m["m_phone"] = Subscriber{Peer: "m_phone", Agent: "a_1", Topics: []string{TopicAgents}, Push: &Push{"expo", token}, Since: t0}
 	if err = f.Save(m); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +151,7 @@ func TestPushDataIsAuthenticatedBoxUnderLimit(t *testing.T) {
 		t.Fatal("phone cannot open box with the node's pinned key")
 	}
 	var n Notice
-	if err = json.Unmarshal(plain, &n); err != nil || n.Machine != "mac" || n.Agent != "sess" || n.Status != StatusNeedsYou || n.Needs == nil {
+	if err = json.Unmarshal(plain, &n); err != nil || n.Kind != "agent" || n.Machine != "mac" || n.Agent != "sess" || n.Status != StatusNeedsYou || n.Needs == nil {
 		t.Fatalf("notice: %+v %v", n, err)
 	}
 	// Another sender's key must not open it: the phone drops forged pushes.

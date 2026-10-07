@@ -13,11 +13,13 @@ import (
 // every update takes an exclusive lock and replaces the file atomically.
 type Store struct{ Path string }
 
-func (s Store) lock() (*os.File, error) {
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
+func (s Store) lock() (*os.File, error) { return lockFile(s.Path) }
+
+func lockFile(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(s.Path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -72,6 +74,54 @@ func (s Store) Update(fn func(*State) error) error {
 	}
 	return writeJSON(s.Path, st)
 }
+
+// LoadJSON reads path into a new T under the file's lock. A missing file
+// yields the zero value.
+func LoadJSON[T any](path string) (*T, error) {
+	l, err := lockFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer l.Close()
+	return readJSON[T](path)
+}
+
+// UpdateJSON runs fn on the current value of path under an exclusive lock and
+// saves the result when fn reports a change.
+func UpdateJSON[T any](path string, fn func(*T) (bool, error)) error {
+	l, err := lockFile(path)
+	if err != nil {
+		return err
+	}
+	defer l.Close()
+	v, err := readJSON[T](path)
+	if err != nil {
+		return err
+	}
+	changed, err := fn(v)
+	if err != nil || !changed {
+		return err
+	}
+	return writeJSON(path, v)
+}
+
+func readJSON[T any](path string) (*T, error) {
+	v := new(T)
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return v, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(b, v); err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return v, nil
+}
+
+// WriteJSON replaces path atomically with the indented JSON of v.
+func WriteJSON(path string, v any) error { return writeJSON(path, v) }
 
 // writeJSON replaces path atomically with the indented JSON of v.
 func writeJSON(path string, v any) error {

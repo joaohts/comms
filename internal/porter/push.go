@@ -23,6 +23,7 @@ const MaxPushData = 3072
 // Notice is the plaintext of an encrypted push. It never carries prompts,
 // transcripts or tool input beyond the short needs text.
 type Notice struct {
+	Kind    string `json:"kind"`
 	Machine string `json:"machine"`
 	Agent   string `json:"agent"`
 	Title   string `json:"title,omitempty"`
@@ -32,7 +33,7 @@ type Notice struct {
 }
 
 func NoticeFor(machine string, a Agent) Notice {
-	n := Notice{Machine: machine, Agent: a.ID, Title: clip(a.Title, 120), Status: a.Status, Summary: clip(a.Summary, 500)}
+	n := Notice{Kind: "agent", Machine: machine, Agent: a.ID, Title: clip(a.Title, 120), Status: a.Status, Summary: clip(a.Summary, 500)}
 	if a.Needs != nil {
 		n.Needs = &Needs{Kind: clip(a.Needs.Kind, 40), Text: clip(a.Needs.Text, 300)}
 	}
@@ -51,7 +52,7 @@ func clip(s string, n int) string {
 // subscriber's pinned public key: base64(nonce || box). The recipient can
 // verify the sender, unlike a sealed box. from is this node's machine id so
 // the app knows which pinned key opens it.
-func PushData(n Notice, from string, recipientPub, senderPriv []byte) (map[string]string, error) {
+func PushData(n any, from string, recipientPub, senderPriv []byte) (map[string]string, error) {
 	if len(recipientPub) != 32 || len(senderPriv) != 32 {
 		return nil, fmt.Errorf("expected 32-byte keys")
 	}
@@ -72,6 +73,16 @@ func PushData(n Notice, from string, recipientPub, senderPriv []byte) (map[strin
 		return nil, fmt.Errorf("push payload too large (%d bytes)", len(b))
 	}
 	return data, nil
+}
+
+// NotifyPushData encrypts a notification push: the whole notify when it
+// fits, otherwise a wake asking the app to fetch it from its comms inbox.
+func NotifyPushData(n Notify, from string, recipientPub, senderPriv []byte) (map[string]string, error) {
+	data, err := PushData(map[string]any{"kind": "notify", "notify": n}, from, recipientPub, senderPriv)
+	if err == nil {
+		return data, nil
+	}
+	return PushData(map[string]any{"kind": "wake", "id": n.ID}, from, recipientPub, senderPriv)
 }
 
 // ErrDeviceNotRegistered means the token is dead and should be forgotten.
