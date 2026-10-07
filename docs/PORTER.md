@@ -1,97 +1,259 @@
-# Porter
+# Porter — contract v1
 
-Porter reports the agents running on a machine — status `running` / `needs_you`
-/ `done`, title, short summary, durations — to subscribed peers and, optionally,
-to their phone as an encrypted push. It is opt-in and off by default.
+Porter shares machine state between comms peers and carries notifications and
+approval questions to João's phone. It runs inside the comms node, is opt-in, and
+is off by default. Design history: `~/notes/projects/pager-agent-monitor.md`.
 
-## Pieces
+Porter is enabled on a machine by the presence of `~/.config/porter/config.toml`
+and a node started with `comms serve --porter`.
 
-- `comms porter event ...` (hooks, short-lived) folds lifecycle events into
-  `<data-dir>/porter/state.json`. It does not need the node.
-- `comms serve --porter` makes the node attach a persistent, global agent with
-  alias `porter` (harness `service`). The node-owned receiver takes
-  subscriptions, watches `state.json` for replacement and publishes changes.
-  There is no separate daemon.
-- Subscribers live in `<data-dir>/porter/subscribers.json`, keyed by the peer's
-  immutable machine id. No SQLite tables are involved.
+## Principles
 
-## Wire format
+- Every porter message is an ordinary end-to-end encrypted comms message whose body
+  is one JSON object `{"type": "porter.<kind>", "v": 1, ...}`. Pairing, grants,
+  queueing and receipts apply unchanged.
+- **Sender identity is never taken from a body.** `from` is the authenticated comms
+  sender (`<machine id>:<agent id>`) of the carrying message.
+- Each machine owns its own state (agents, special flags, trusts, subscribers).
+  Peers display it and request changes; the owner validates every change.
+- Unknown fields are ignored; unknown `type`s are consumed and ignored.
 
-All porter traffic is ordinary end-to-end encrypted comms messages whose body
-is one JSON object with a `type` field. Pairing, grants, broker queueing and
-receipts apply unchanged.
+## Addresses
 
-### Peer → `<machine>:porter`
+- Porter on a machine is the persistent global agent with alias `porter`
+  (`<machine alias>:porter`). Topic traffic and control messages go there.
+- The phone is an ordinary comms node with one persistent global agent, alias
+  `app`. It is "an approver" on a machine when that machine's config lists it.
 
-```json
-{"type": "porter.subscribe", "push": {"provider": "expo", "token": "ExponentPushToken[...]"}}
-{"type": "porter.unsubscribe"}
+## Config (`~/.config/porter/config.toml`)
+
+```toml
+approvers = ["phone"]          # peers whose answers count; stored as machine ids
+approvals = "auto"             # auto | phone | terminal
+ask_timeout = "2m"
+idle_threshold = "2m"
+
+[share]                        # topic → "*" (all granted peers) or a list of peers
+agents = "*"
+status = "*"
 ```
 
-- `push` is optional. A subscribe replaces the previous subscription of that
-  peer (one per peer machine), so omitting `push` clears a stored token. The
-  app re-sends subscribe on start and whenever its token changes.
-- Updates go to the agent that sent the subscribe.
-- Accepted only from remote peers that currently hold a messaging grant on
-  this node. Local agents read `state.json` (or `comms porter status`) instead.
-- Malformed or refused controls are consumed and ignored; there is no reply.
-- Revoking the peer's grant drops its subscription at the next publish.
+`comms porter setup --approver <peer>` writes it. Aliases are resolved to
+immutable machine ids when written.
 
-### `porter` → subscriber
+## Topics
+
+| Topic | Value | Published by |
+|---|---|---|
+| `agents` | collection of AGENT, keyed by `id` | every porter machine |
+| `status` | one STATUS object | every porter machine (and the phone) |
+| `trusts` | collection of TRUST, keyed by `id` | every porter machine; **approvers only** |
+
+A topic is delivered to a subscriber only if the subscriber's machine holds a
+messaging grant **and** the topic's share entry includes it (`trusts`: approvers).
+
+### Subscribing — peer → `<machine>:porter`
 
 ```json
-{"type": "porter.snapshot", "machine": "personal-mac", "agents": [AGENT, ...], "truncated": false}
-{"type": "porter.agent",    "machine": "personal-mac", "agent": AGENT}
-{"type": "porter.remove",   "machine": "personal-mac", "id": "<agent id>"}
+{"type": "porter.subscribe", "v": 1, "topics": ["agents", "status", "trusts"],
+ "push": {"provider": "expo", "token": "ExponentPushToken[...]"}}
+{"type": "porter.unsubscribe", "v": 1}
 ```
 
-- `snapshot`: on every subscribe and on node start (to existing subscribers).
-  Ordered needs_you first, then most recently active; trimmed from the end to
-  fit the 64 KiB message limit, with `truncated: true`.
-- `agent`: one record per new or changed agent.
-- `remove`: the session ended.
-- `machine` is the node name (`comms name`).
+- One subscription per peer machine; a subscribe replaces the previous one
+  (omitting `push` clears the token). Re-send on app start and on token change.
+- Topic updates go to the agent that sent the subscribe.
+- Reply, always:
 
-`AGENT`:
+```json
+{"type": "porter.subscribed", "v": 1, "machine": "pi",
+ "topics": ["agents", "status"], "refused": ["trusts"],
+ "approver": false, "push": true, "porter_version": "0.2.0"}
+```
+
+  followed by one `porter.snapshot` per granted topic.
+
+### Topic messages — `porter` → subscriber
+
+```json
+{"type": "porter.snapshot", "v": 1, "machine": "pi", "topic": "agents", "items": [AGENT, ...], "truncated": false}
+{"type": "porter.snapshot", "v": 1, "machine": "pi", "topic": "status", "value": STATUS}
+{"type": "porter.update",   "v": 1, "machine": "pi", "topic": "agents", "item": AGENT}
+{"type": "porter.update",   "v": 1, "machine": "pi", "topic": "status", "value": STATUS}
+{"type": "porter.remove",   "v": 1, "machine": "pi", "topic": "agents", "id": "<id>"}
+```
+
+- `snapshot` on subscribe and on node start. Collections are ordered as they
+  should be shown by default and trimmed from the end to fit 64 KiB
+  (`truncated: true`).
+- `update` replaces one item (or the value). `remove` deletes one item.
+- `machine` is the publishing node's name.
+
+### AGENT
 
 ```json
 {
-  "id": "<harness session id>", "harness": "claude", "title": "pager-refactor",
-  "project": "~/notes", "status": "running | needs_you | done",
-  "needs": {"kind": "permission", "text": "Bash: npm install"},
-  "summary": "...", "special": false,
+  "id": "<harness session id or subagent id>",
+  "harness": "claude | codex | cursor | ...",
+  "parent": "<parent agent id>",          // subagents only
+  "agent_type": "Explore",                 // subagents only
+  "title": "pager-refactor",               // custom name > comms alias > first prompt
+  "project": "notes",
+  "identity": {"alias": "pager-refactor", "address": "personal-mac:pager-refactor", "persistent": false},
+  "status": "running | needs_you | done | ended",
+  "needs": {"kind": "permission | input", "text": "Bash: npm install"},
+  "summary": "Researching comms/push design",
+  "special": false,
   "started_at": "RFC3339", "last_active_at": "RFC3339", "status_since": "RFC3339",
-  "running_ms": 0, "waiting_ms": 0
+  "running_ms": 0, "waiting_ms": 0,
+  "ended_at": "RFC3339", "end_reason": "closed | stale"   // ended only
 }
 ```
 
-Durations cover closed status periods; clients add `now - status_since` for the
-current one. Prompts, transcripts, tool input and file contents are never sent.
+- Optional fields are omitted when empty. `needs` only while `needs_you`.
+- Durations cover closed periods; clients add `now - status_since` to `running_ms`
+  while `running` and to `waiting_ms` while `needs_you`.
+- `ended` = graveyard: session closed, or no activity for 24 h (`stale`). Ended
+  agents are kept 7 days, then `remove`d. Clients hide them from the main list.
+- Subagents are separate items with `parent`; clients nest them.
+- `special` sticks to `identity` when `persistent`, else to the session.
+- Never sent: prompts, transcripts, full tool input, file contents.
+
+### STATUS
+
+```json
+{"host": "pi", "os": "linux", "uptime_s": 86400, "load": 0.42, "mem_pct": 41,
+ "disk_pct": 63, "temp_c": 52.1, "battery_pct": 80,
+ "comms_version": "0.2.0", "agents_running": 3, "at": "RFC3339"}
+```
+
+Published every 60 s and on change of `agents_running`. `temp_c` and
+`battery_pct` only where available.
+
+### TRUST
+
+```json
+{"id": "tr_…", "receiver": "pi:joana", "sender": "work-mac:secretary",
+ "sender_id": "<machine id>:<agent id>", "scope": "session | always",
+ "approved_at": "RFC3339"}
+```
+
+## Control — approver → `<machine>:porter`
+
+```json
+{"type": "porter.set",    "v": 1, "agent": "<id>", "special": true}
+{"type": "porter.revoke", "v": 1, "trust": "tr_…"}
+```
+
+Accepted only from approvers; others are ignored. Effects arrive as topic updates.
+
+## Notifications and questions
+
+Any agent or script sends a notification with
+`comms porter notify --to <peer> --title T --body B --reason R [--priority normal|high] [--ask "A,B"] [--link L]`.
+MCP `send_push(title, message, reason, priority?)` is a wrapper over it.
+
+Received by the phone's `app` agent:
+
+```json
+{"type": "porter.notify", "v": 1, "id": "ntf_…",
+ "kind": "message | permission | trust",
+ "title": "Deploy finished", "body": "pager-api v2 is live", "reason": "you asked to be told",
+ "priority": "normal | high",
+ "ask": ["Allow", "Deny"],                  // optional; makes it a question
+ "expires_at": "RFC3339",                   // questions only
+ "link": "agent:<machine>/<id> | https://…", // optional
+ "context": {"machine": "pi", "harness": "claude", "session": "<id>", "title": "joana", "project": "brain"},
+ "trust": {"receiver": "pi:joana", "sender": "work-mac:secretary"},  // kind=trust only
+ "sent_at": "RFC3339"}
+```
+
+- `context` is stamped by the sending node from the sender's comms session; a
+  sender cannot set it. `reason` is required (the CLI rejects a notify without one).
+- `kind=permission`: a harness permission prompt (`ask` = `["Allow","Deny"]`).
+- `kind=trust`: first order from an untrusted peer agent
+  (`ask` = `["Once","This session","Always","Deny"]`).
+
+Answer, phone → the exact `from` of the notify:
+
+```json
+{"type": "porter.answer", "v": 1, "id": "ntf_…", "choice": "Allow"}
+```
+
+Counted only when the answering machine is an approver of the asking machine and
+the question has not expired. When a question is resolved elsewhere (terminal,
+timeout, another approver), the asker sends:
+
+```json
+{"type": "porter.cancel", "v": 1, "id": "ntf_…", "resolution": "terminal | timeout | answered"}
+```
 
 ## Encrypted push
 
-For subscribers with a push token, porter pushes when an agent enters
-`needs_you`, and additionally on every stop of a `special` agent. A freshly
-started session is not a stop.
+Porter sends a push to subscribers with a token:
+- an agent enters `needs_you`;
+- a `special` agent stops (`done`);
+- every `porter.notify` (to the phone it is addressed to).
 
-The push is a data-only, high-priority Expo message (no title/body) sent to
-`https://exp.host/--/api/v2/push/send`:
+Data-only, high-priority Expo message to `https://exp.host/--/api/v2/push/send`:
 
 ```json
 {"to": "ExponentPushToken[...]", "priority": "high",
  "data": {"porter": "1", "from": "<sender machine id>", "box": "<base64>"}}
 ```
 
-`box` is `base64(nonce[24] || nacl.box(plaintext, nonce, subscriberPublicKey,
-nodePrivateKey))` — an authenticated box, not a sealed box. The app looks up the
-pinned key for `from`, opens the box, and drops anything that fails. Plaintext:
+`box = base64(nonce[24] || nacl.box(plaintext, nonce, phonePublicKey, nodePrivateKey))`
+— an authenticated box (not sealed). The app looks up the pinned key for `from`,
+opens the box and drops anything that fails. Plaintext is one of:
 
 ```json
-{"machine": "personal-mac", "agent": "<id>", "title": "...", "status": "needs_you",
+{"kind": "agent", "machine": "pi", "agent": "<id>", "title": "...", "status": "needs_you",
  "needs": {"kind": "permission", "text": "..."}, "summary": "..."}
+{"kind": "notify", "notify": NOTIFY}           // the porter.notify object, when it fits
+{"kind": "wake", "id": "ntf_…"}                // too large: fetch from the comms inbox
 ```
 
-Title, summary and needs text are clipped so `data` stays under 3 KiB (Expo's
-limit is 4 KiB). A `DeviceNotRegistered` answer clears the stored token; the
-subscription itself remains. A leaked token only allows droppable spam; Expo
-"enhanced push security" stays off.
+`data` stays under 3 KiB. `DeviceNotRegistered` clears the stored token.
+
+## Trust labels
+
+When porter is on, the node labels peer messages delivered to local agents:
+`[trusted: session]`, `[trusted: always]` or `[untrusted]`, from the receiving
+machine's trust store keyed by `(receiver agent, sender immutable id)`. Trust means
+"accept orders as if from João"; it never bypasses the harness's own permission
+prompts. An untrusted order → the agent runs `comms porter ask-trust` (a
+`kind=trust` notify) before acting.
+
+## Approvals (`comms porter ask`)
+
+The PermissionRequest hook installed by `comms porter install-hooks`:
+- `approvals = auto`: if the machine has a display and HID idle < `idle_threshold`
+  → return `ask` at once (normal terminal prompt). Otherwise ask the phone.
+- `phone` → always ask the phone; `terminal` → never.
+- Phone answer `Allow` → allow, `Deny` → deny; timeout or any error → `ask`.
+- Every approval is appended to `<data-dir>/porter/audit.jsonl`.
+
+## Local commands
+
+```
+comms porter setup --approver PEER        write config
+comms porter install-hooks [--uninstall]  Claude + Codex hooks (lifecycle + PermissionRequest)
+comms porter event --agent ID --kind K …  record state (start|prompt|needs|stop|end|update)
+comms porter status [--all]               local agents (--all: every subscribed machine, from cache)
+comms porter get MACHINE TOPIC            cached topic value from a peer
+comms porter notify --to PEER …           send a notification
+comms porter ask "TEXT" [--kind permission]  blocking question → allow|deny|timeout
+comms porter trust [list|revoke ID]       local trust store
+```
+
+A node with porter on subscribes to granted peers' shared topics on its own and
+caches the latest values in `<data-dir>/porter/cache/`, so local agents can read
+other machines with `status --all` / `get`.
+
+## Pairing the phone
+
+The phone exports the same identity bundle as `comms export`
+(`{"machine_id","public_key","alias"}`, public key base64) via a copy button, and
+pastes each machine's bundle. On the machine: `comms pair --stdin` then
+`comms grant <phone>`. The phone also needs the broker URL and the broker service
+key (pasted once, kept in secure storage).
