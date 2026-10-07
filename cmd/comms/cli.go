@@ -14,6 +14,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/joaohts/comms/internal/client"
@@ -94,7 +95,7 @@ func (a *app) run(ctx context.Context, args []string) error {
 		return a.codex(ctx, cfg, socket, args[1:])
 	}
 	if args[0] == "porter" {
-		return a.porter(cfg.DataDir, args[1:])
+		return a.porter(ctx, cfg.DataDir, socket, args[1:])
 	}
 	if socket == "" {
 		socket = filepath.Join(cfg.DataDir, "node.sock")
@@ -521,8 +522,12 @@ func (a *app) pair(ctx context.Context, args []string) error {
 	} else if !*stdin && *file != "-" {
 		return usageError("supply a verified identity bundle using --file FILE or --stdin")
 	}
-	var p comms.Peer
-	if err := json.NewDecoder(io.LimitReader(reader, 64<<10)).Decode(&p); err != nil {
+	raw, err := io.ReadAll(io.LimitReader(reader, 64<<10))
+	if err != nil {
+		return err
+	}
+	p, err := parseBundle(raw)
+	if err != nil {
 		return usageError("invalid identity bundle: " + err.Error())
 	}
 	if *alias != "" {
@@ -533,6 +538,43 @@ func (a *app) pair(ctx context.Context, args []string) error {
 	}
 	p.VerifiedAt = time.Now().UTC().UnixMilli()
 	return a.mutation(ctx, "PUT", "/v1/peers/"+url.PathEscape(p.MachineID), p)
+}
+
+// parseBundle reads an identity bundle as exported by comms export or pasted
+// from the phone: surrounding text, code fences, a BOM, smart whitespace and
+// line-wrapped or URL-safe base64 keys are tolerated.
+func parseBundle(raw []byte) (comms.Peer, error) {
+	var p comms.Peer
+	s := strings.TrimPrefix(string(raw), "\ufeff")
+	start, end := strings.Index(s, "{"), strings.LastIndex(s, "}")
+	if start < 0 || end < start {
+		return p, fmt.Errorf("no JSON object found")
+	}
+	var v struct {
+		MachineID string `json:"machine_id"`
+		Alias     string `json:"alias"`
+		PublicKey string `json:"public_key"`
+	}
+	if err := json.Unmarshal([]byte(s[start:end+1]), &v); err != nil {
+		return p, err
+	}
+	key := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, v.PublicKey)
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		if b, err := enc.DecodeString(key); err == nil {
+			p.PublicKey = b
+			break
+		}
+	}
+	if p.PublicKey == nil && key != "" {
+		return p, fmt.Errorf("public_key is not base64")
+	}
+	p.MachineID, p.Alias = strings.TrimSpace(v.MachineID), strings.TrimSpace(v.Alias)
+	return p, nil
 }
 
 func (a *app) grant(ctx context.Context, args []string, allow bool) error {
@@ -786,7 +828,7 @@ func (a *app) serve(ctx context.Context, cfg comms.Config, args []string) error 
 	f.DurationVar(&cfg.Lease, "lease", cfg.Lease, "")
 	f.DurationVar(&cfg.Drain, "drain", cfg.Drain, "")
 	f.BoolVar(&cfg.AllowInsecure, "allow-insecure", false, "")
-	f.BoolVar(&cfg.Porter, "porter", false, "publish porter agent state to subscribed peers")
+	f.BoolVar(&cfg.Porter, "porter", false, "run porter: share topics, notifications, approvals")
 	f.IntVar(&cfg.LocalCount, "local-count", cfg.LocalCount, "")
 	f.Int64Var(&cfg.LocalBytes, "local-bytes", cfg.LocalBytes, "")
 	f.IntVar(&cfg.BrokerCount, "broker-count", cfg.BrokerCount, "")
@@ -843,8 +885,16 @@ func (a *app) help() error {
   prune --before DATE                 Delete completed history content
   retire AGENT                        Retire an identity explicitly
   version                             Release and protocol versions
+  porter setup --approver PEER        Write ~/.config/porter/config.toml
+  porter install-hooks [--uninstall]  Register porter hooks for Claude Code and Codex
   porter event --agent ID --kind KIND  Record agent state (start|prompt|needs|stop|end|update)
-  porter status                       List agents recorded by porter
+  porter status [--all]               Local agents (--all: cached peer machines too)
+  porter get MACHINE TOPIC            Cached topic value from a peer (agents|status|trusts)
+  porter notify --to PEER --title T --body B --reason R [--ask "A,B"] [--from ALIAS]
+                                      Notify a phone (encrypted push)
+  porter ask "TEXT"                   Ask the approvers: allow|deny|timeout (exit 0|2|3)
+  porter ask-trust --sender ID        Ask whether to trust a peer agent's orders
+  porter trust [list|revoke ID]       Local trust store
 
 Global: --json (full details), --compact (small JSON for routine agent calls),
         --data-dir PATH, --socket PATH

@@ -216,10 +216,14 @@ func (ch *claudeChannel) stop() {
 
 func (ch *claudeChannel) notify(ctx context.Context, message comms.Message) error {
 	peer := comms.ContentForPeer(message)
-	params, err := json.Marshal(map[string]any{"content": peer.Body, "meta": map[string]string{
+	meta := map[string]string{
 		"message_id": peer.MessageID, "from": peer.SenderMachine + ":" + peer.SenderAgent,
 		"authority": peer.Authority, "origin_authenticated": "true", "claims_verified": "false",
-	}})
+	}
+	if peer.Trust != "" {
+		meta["trust"] = peer.Trust
+	}
+	params, err := json.Marshal(map[string]any{"content": peer.Body, "meta": meta})
 	if err != nil {
 		return err
 	}

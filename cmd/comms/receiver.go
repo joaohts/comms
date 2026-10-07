@@ -92,7 +92,11 @@ func (a *app) stream(ctx context.Context, args []string) error {
 		}
 		// Keep peer-controlled terminal escapes/newlines inside a JSON string.
 		body, _ := json.Marshal(m.Body)
-		_, err := fmt.Fprintf(a.out, "COMMS PEER CONTENT from %s:%s [message=%s]: %s\n", m.SenderMachine, m.SenderAgent, m.ID, body)
+		label := ""
+		if m.Trust != "" {
+			label = "[" + m.Trust + "] "
+		}
+		_, err := fmt.Fprintf(a.out, "COMMS PEER CONTENT %sfrom %s:%s [message=%s]: %s\n", label, m.SenderMachine, m.SenderAgent, m.ID, body)
 		return err
 	})
 }
