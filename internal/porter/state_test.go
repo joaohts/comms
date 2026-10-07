@@ -180,3 +180,19 @@ func TestStoreConcurrentUpdates(t *testing.T) {
 		t.Fatalf("lost updates: %d agents", len(s.Agents))
 	}
 }
+
+func TestSweepKeepsWorkingSubagentsAndTheirParents(t *testing.T) {
+	s := NewState()
+	mustApply(t, s, Event{Agent: "p", Kind: KindStop, At: at(0)})
+	mustApply(t, s, Event{Agent: "bg", Parent: "p", Kind: KindPrompt, At: at(0)})
+	mustApply(t, s, Event{Agent: "q", Kind: KindStop, At: at(0)})
+	mustApply(t, s, Event{Agent: "asks", Parent: "q", Kind: KindNeeds, At: at(0)})
+	mustApply(t, s, Event{Agent: "r", Kind: KindStop, At: at(0)})
+	mustApply(t, s, Event{Agent: "finished", Parent: "r", Kind: KindStop, At: at(0)})
+	s.Sweep(at(0).Add(3 * StaleAfter))
+	for id, want := range map[string]string{"p": StatusDone, "bg": StatusRunning, "q": StatusDone, "asks": StatusEnded, "r": StatusEnded, "finished": StatusEnded} {
+		if got := s.Agents[id].Status; got != want {
+			t.Fatalf("%s: %s, want %s", id, got, want)
+		}
+	}
+}

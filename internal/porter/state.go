@@ -229,12 +229,23 @@ func (s *State) SetIdentity(a *Agent, id Identity) bool {
 // than KeepEnded ago. It returns the ids of forgotten agents.
 func (s *State) Sweep(now time.Time) (changed bool, purged []string) {
 	now = now.UTC()
+	busy := map[string]bool{}
+	for _, c := range s.Agents {
+		if c.Parent != "" && (c.Status == StatusRunning || c.Status == StatusNeedsYou) {
+			busy[c.Parent] = true
+		}
+	}
 	for id, a := range s.Agents {
 		if a.Status == StatusEnded {
 			if a.EndedAt == nil || now.Sub(*a.EndedAt) > KeepEnded {
 				delete(s.Agents, id)
 				purged = append(purged, id)
 			}
+			continue
+		}
+		// Background subagents are silent between start and stop, and a parent
+		// stays alive while any of its subagents works.
+		if a.Parent != "" && a.Status == StatusRunning || busy[id] {
 			continue
 		}
 		if now.Sub(a.LastActiveAt) > StaleAfter {

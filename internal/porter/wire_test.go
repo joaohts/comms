@@ -194,3 +194,10 @@ func TestExpoClient(t *testing.T) {
 		t.Fatalf("rate error: %v", err)
 	}
 }
+
+func TestParseSubscribedReply(t *testing.T) {
+	c, err := Parse(`{"type":"porter.subscribed","v":1,"machine":"pi","topics":["agents"],"refused":[],"approver":false,"push":true,"porter_version":"0.2.0"}`)
+	if err != nil || c.Type != TypeSubscribed || c.Version != "0.2.0" || c.Push != nil {
+		t.Fatalf("%+v %v", c, err)
+	}
+}

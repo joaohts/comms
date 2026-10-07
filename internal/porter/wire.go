@@ -39,7 +39,8 @@ type Push struct {
 type Inbound struct {
 	Type    string            `json:"type"`
 	Topics  []string          `json:"topics,omitempty"`
-	Push    *Push             `json:"push,omitempty"`
+	Push    *Push             `json:"-"`
+	RawPush json.RawMessage   `json:"push,omitempty"`
 	Agent   string            `json:"agent,omitempty"`
 	Special *bool             `json:"special,omitempty"`
 	Trust   string            `json:"trust,omitempty"`
@@ -68,6 +69,11 @@ func Parse(body string) (Inbound, error) {
 	}
 	switch c.Type {
 	case TypeSubscribe:
+		if len(c.RawPush) > 0 && string(c.RawPush) != "null" {
+			if err := json.Unmarshal(c.RawPush, &c.Push); err != nil {
+				return c, fmt.Errorf("unsupported push registration")
+			}
+		}
 		if c.Push != nil && (c.Push.Provider != "expo" || !expoToken.MatchString(c.Push.Token)) {
 			return c, fmt.Errorf("unsupported push registration")
 		}
