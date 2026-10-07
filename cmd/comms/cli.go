@@ -93,6 +93,9 @@ func (a *app) run(ctx context.Context, args []string) error {
 	if args[0] == "codex" {
 		return a.codex(ctx, cfg, socket, args[1:])
 	}
+	if args[0] == "porter" {
+		return a.porter(cfg.DataDir, args[1:])
+	}
 	if socket == "" {
 		socket = filepath.Join(cfg.DataDir, "node.sock")
 	}
@@ -838,6 +841,8 @@ func (a *app) help() error {
   prune --before DATE                 Delete completed history content
   retire AGENT                        Retire an identity explicitly
   version                             Release and protocol versions
+  porter event --agent ID --kind KIND  Record agent state (start|prompt|needs|stop|end|update)
+  porter status                       List agents recorded by porter
 
 Global: --json (full details), --compact (small JSON for routine agent calls),
         --data-dir PATH, --socket PATH
