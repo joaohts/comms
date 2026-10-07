@@ -61,7 +61,8 @@ messaging grant **and** the topic's share entry includes it (`trusts`: approvers
 ```
 
 - One subscription per peer machine; a subscribe replaces the previous one
-  (omitting `push` clears the token). Re-send on app start and on token change.
+  (omitting `push` clears the token; omitting `topics` means `["agents","status"]`).
+  Re-send on app start and on token change.
 - Topic updates go to the agent that sent the subscribe.
 - Reply, always:
 
@@ -97,7 +98,7 @@ messaging grant **and** the topic's share entry includes it (`trusts`: approvers
   "harness": "claude | codex | cursor | ...",
   "parent": "<parent agent id>",          // subagents only
   "agent_type": "Explore",                 // subagents only
-  "title": "pager-refactor",               // custom name > comms alias > first prompt
+  "title": "pager-refactor",               // custom name > comms alias
   "project": "notes",
   "identity": {"alias": "pager-refactor", "address": "personal-mac:pager-refactor", "persistent": false},
   "status": "running | needs_you | done | ended",
@@ -115,7 +116,10 @@ messaging grant **and** the topic's share entry includes it (`trusts`: approvers
   while `running` and to `waiting_ms` while `needs_you`.
 - `ended` = graveyard: session closed, or no activity for 24 h (`stale`). Ended
   agents are kept 7 days, then `remove`d. Clients hide them from the main list.
-- Subagents are separate items with `parent`; clients nest them.
+- Subagents are separate items with `parent`; clients nest them. A running
+  subagent never goes stale (background subagents are silent between start and
+  stop), and a parent never goes stale while a subagent is running or
+  `needs_you`. Ending a parent ends its subagents.
 - `special` sticks to `identity` when `persistent`, else to the session.
 - Never sent: prompts, transcripts, full tool input, file contents.
 
@@ -163,13 +167,18 @@ Received by the phone's `app` agent:
  "ask": ["Allow", "Deny"],                  // optional; makes it a question
  "expires_at": "RFC3339",                   // questions only
  "link": "agent:<machine>/<id> | https://…", // optional
- "context": {"machine": "pi", "harness": "claude", "session": "<id>", "title": "joana", "project": "brain"},
+ "context": {"machine": "pi", "agent": "pi:joana", "harness": "claude", "session": "<id>", "title": "joana", "project": "brain"},
  "trust": {"receiver": "pi:joana", "sender": "work-mac:secretary"},  // kind=trust only
  "sent_at": "RFC3339"}
 ```
 
-- `context` is stamped by the sending node from the sender's comms session; a
-  sender cannot set it. `reason` is required (the CLI rejects a notify without one).
+- Notifications and questions are carried by `<machine>:porter`, so `from` is
+  always porter (hooks and scripts often have no comms identity of their own).
+  The originating agent is in `context`, stamped by the sending node from the
+  sender's comms session (`--from ALIAS`, else the current harness session); a
+  sender cannot set it. `context.agent` is that identity's comms address.
+  `reason` is required (the CLI rejects a notify without one).
+- `--to PEER` without `:AGENT` means `PEER:app`.
 - `kind=permission`: a harness permission prompt (`ask` = `["Allow","Deny"]`).
 - `kind=trust`: first order from an untrusted peer agent
   (`ask` = `["Once","This session","Always","Deny"]`).
@@ -181,8 +190,11 @@ Answer, phone → the exact `from` of the notify:
 ```
 
 Counted only when the answering machine is an approver of the asking machine and
-the question has not expired. When a question is resolved elsewhere (terminal,
-timeout, another approver), the asker sends:
+the question has not expired. Porter forwards a counted answer to the asking agent as
+`porter.answer` (from `<machine>:porter`; `notify --ask` requires a comms
+identity for this). When a question is resolved elsewhere (terminal,
+timeout, another approver), the asker sends to the other recipients (and to the
+asking agent):
 
 ```json
 {"type": "porter.cancel", "v": 1, "id": "ntf_…", "resolution": "terminal | timeout | answered"}
@@ -219,7 +231,11 @@ opens the box and drops anything that fails. Plaintext is one of:
 
 When porter is on, the node labels peer messages delivered to local agents:
 `[trusted: session]`, `[trusted: always]` or `[untrusted]`, from the receiving
-machine's trust store keyed by `(receiver agent, sender immutable id)`. Trust means
+machine's trust store keyed by `(receiver agent, sender immutable id)`. The
+label is the `trust` field of compact/Codex peer content and Claude channel
+`meta`, and a `[…]` prefix of the text stream line. A session trust is dropped
+once its sender has been absent from the broker directory for 10 minutes (an
+ephemeral identity never returns). Trust means
 "accept orders as if from João"; it never bypasses the harness's own permission
 prompts. An untrusted order → the agent runs `comms porter ask-trust` (a
 `kind=trust` notify) before acting.
@@ -232,6 +248,14 @@ The PermissionRequest hook installed by `comms porter install-hooks`:
 - `phone` → always ask the phone; `terminal` → never.
 - Phone answer `Allow` → allow, `Deny` → deny; timeout or any error → `ask`.
 - Every approval is appended to `<data-dir>/porter/audit.jsonl`.
+- Claude's command hooks time out after 600 s by default; install-hooks sets the
+  PermissionRequest hook `timeout` to `ask_timeout + 60s` (others 30 s), and the
+  hook gives up at `ask_timeout` itself, so porter, not Claude, decides `ask`.
+  Reply: `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow|deny|ask"}}}`.
+- Codex PermissionRequest is recorded as `needs_you` only; Codex hooks reply `{}`.
+- SubagentStop without a subagent transcript (`agent_transcript_path`, else
+  `<transcript minus .jsonl>/subagents/agent-<id>.jsonl`) is ignored: Claude's
+  internal helpers fire those.
 
 ## Local commands
 
@@ -241,19 +265,29 @@ comms porter install-hooks [--uninstall]  Claude + Codex hooks (lifecycle + Perm
 comms porter event --agent ID --kind K …  record state (start|prompt|needs|stop|end|update)
 comms porter status [--all]               local agents (--all: every subscribed machine, from cache)
 comms porter get MACHINE TOPIC            cached topic value from a peer
-comms porter notify --to PEER …           send a notification
-comms porter ask "TEXT" [--kind permission]  blocking question → allow|deny|timeout
+comms porter hook --harness claude|codex  the installed hook (stdin JSON)
+comms porter notify --to PEER …           send a notification (--from ALIAS, --expires D)
+comms porter ask "TEXT" [--kind permission]  blocking question → prints allow|deny|timeout, exit 0|2|3
+comms porter ask-trust --sender MACHINE_ID:AGENT_ID [--from ALIAS]
+                                          kind=trust question → once|session|always|deny|timeout, exit 0|0|0|2|3
 comms porter trust [list|revoke ID]       local trust store
 ```
 
-A node with porter on subscribes to granted peers' shared topics on its own and
-caches the latest values in `<data-dir>/porter/cache/`, so local agents can read
+The CLI talks to the node through local API routes `POST /v1/porter/notify`,
+`POST /v1/porter/questions`, `GET|DELETE /v1/porter/questions/{id}` (409
+`porter_disabled` when the node runs without `--porter`). Config path override
+for tests: `PORTER_CONFIG`.
+
+A node with porter on subscribes to granted peers' shared topics on its own
+(every peer whose `porter` agent is in the broker directory, until it replies
+`porter.subscribed`) and caches the latest values in `<data-dir>/porter/cache/`, so local agents can read
 other machines with `status --all` / `get`.
 
 ## Pairing the phone
 
 The phone exports the same identity bundle as `comms export`
 (`{"machine_id","public_key","alias"}`, public key base64) via a copy button, and
-pastes each machine's bundle. On the machine: `comms pair --stdin` then
+pastes each machine's bundle. On the machine: `comms pair --stdin` (tolerates
+surrounding text, code fences, a BOM, wrapped or URL-safe base64) then
 `comms grant <phone>`. The phone also needs the broker URL and the broker service
 key (pasted once, kept in secure storage).
