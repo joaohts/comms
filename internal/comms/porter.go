@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -17,29 +18,74 @@ import (
 // peers. Peers address it as <machine>:porter.
 const PorterAlias = "porter"
 
+// AppAlias is the agent a phone runs; `--to phone` means phone:app.
+const AppAlias = "app"
+
 // The porter bridge is a node-owned receiver, like native Codex: the node is
 // already always on, so it attaches the porter identity itself, takes
-// subscriptions from granted peers and publishes state changes written to
-// <data-dir>/porter/state.json by short-lived `comms porter event` processes.
+// subscriptions and control messages from granted peers, publishes topics,
+// carries notifications and questions, and caches peers' topics. Agent state
+// is written to <data-dir>/porter/state.json by short-lived `comms porter`
+// processes (hooks); the bridge polls it for changes.
 type porterBridge struct {
-	n       *Node
-	state   porter.Store
-	file    porter.Subscribers
-	push    porter.Pusher
-	session Session
-	mu      sync.Mutex
-	subs    map[string]porter.Subscriber
-	last    map[string]*porter.Agent
-	seen    os.FileInfo
-	pushes  sync.WaitGroup
+	n          *Node
+	dir        string
+	cfgPath    string
+	state      porter.Store
+	file       porter.Subscribers
+	trustsPath string
+	cache      porter.Cache
+	push       porter.Pusher
+	pushes     sync.WaitGroup
+
+	mu        sync.Mutex
+	session   Session
+	subs      map[string]porter.Subscriber
+	questions map[string]*question
+	trusts    *porter.Trusts
+	trustInfo os.FileInfo
+
+	// Owned by the attach goroutine.
+	last          map[string]*porter.Agent
+	seen          os.FileInfo
+	lastTrusts    map[string]porter.Trust
+	trustSeen     os.FileInfo
+	running       int
+	lastSubscribe time.Time
+	peerOK        map[string]bool
+	trustMissing  map[string]time.Time
+	lastSweep     time.Time
+	lastStatus    time.Time
+	lastPrune     time.Time
 }
 
-func (n *Node) runPorter() {
+func newPorterBridge(n *Node) *porterBridge {
 	dir := filepath.Join(n.cfg.DataDir, "porter")
-	b := &porterBridge{n: n, state: porter.Store{Path: filepath.Join(dir, "state.json")}, file: porter.Subscribers{Path: filepath.Join(dir, "subscribers.json")}, push: n.cfg.PorterPush}
+	b := &porterBridge{n: n, dir: dir, cfgPath: n.cfg.PorterConfig, state: porter.Store{Path: filepath.Join(dir, "state.json")},
+		file: porter.Subscribers{Path: filepath.Join(dir, "subscribers.json")}, trustsPath: filepath.Join(dir, "trusts.json"),
+		cache: porter.Cache{Dir: filepath.Join(dir, "cache")}, push: n.cfg.PorterPush, questions: map[string]*question{},
+		peerOK: map[string]bool{}, trustMissing: map[string]time.Time{}}
+	if b.cfgPath == "" {
+		b.cfgPath = porter.ConfigPath()
+	}
 	if b.push == nil {
 		b.push = porter.Expo{HTTP: &http.Client{Timeout: 10 * time.Second}}
 	}
+	return b
+}
+
+func (b *porterBridge) config() porter.Config {
+	c, e := porter.LoadConfig(b.cfgPath)
+	if e != nil {
+		// Fail closed: a broken config shares nothing and trusts no approver.
+		log.Printf("porter config: %v", e)
+		return porter.Config{Approvals: porter.ApprovalsTerminal, AskTimeout: 2 * time.Minute, IdleThreshold: 2 * time.Minute, Share: map[string][]string{}}
+	}
+	return c
+}
+
+func (n *Node) runPorter() {
+	b := n.porter
 	defer b.pushes.Wait()
 	var e error
 	if b.subs, e = b.file.Load(); e != nil {
@@ -51,10 +97,13 @@ func (n *Node) runPorter() {
 	b.seen, _ = os.Stat(b.state.Path)
 	if s, e := b.state.Load(); e == nil {
 		b.last = s.Agents
+		b.running = s.Running()
 	} else {
 		log.Printf("porter: %v", e)
 		b.last = map[string]*porter.Agent{}
 	}
+	b.trustSeen, _ = os.Stat(b.trustsPath)
+	b.lastTrusts = b.loadTrusts().Trusts
 	first := true
 	for n.ctx.Err() == nil {
 		if e = b.attach(first); e != nil {
@@ -75,7 +124,9 @@ func (b *porterBridge) attach(first bool) error {
 	if e != nil {
 		return e
 	}
+	b.mu.Lock()
 	b.session = v.Session
+	b.mu.Unlock()
 	ctx, cancel := context.WithCancel(n.ctx)
 	defer cancel()
 	r := &receiver{v.Session, make(chan Event, 1), ctx, cancel}
@@ -109,10 +160,12 @@ func (b *porterBridge) attach(first bool) error {
 	if first {
 		b.snapshotAll()
 	}
+	b.lastSubscribe = time.Time{}
 	poll := min(n.cfg.Heartbeat, 500*time.Millisecond)
-	pollTick, leaseTick := time.NewTicker(poll), time.NewTicker(n.cfg.Heartbeat)
+	pollTick, leaseTick, slowTick := time.NewTicker(poll), time.NewTicker(n.cfg.Heartbeat), time.NewTicker(min(time.Second, 4*poll))
 	defer pollTick.Stop()
 	defer leaseTick.Stop()
+	defer slowTick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -123,6 +176,9 @@ func (b *porterBridge) attach(first bool) error {
 			}
 		case <-pollTick.C:
 			b.poll()
+			b.pollTrusts()
+		case <-slowTick.C:
+			b.maintain()
 		case ev := <-r.events:
 			if ev.Message == nil {
 				continue
@@ -146,29 +202,83 @@ func (b *porterBridge) granted(peer string) bool {
 
 func (b *porterBridge) handle(m Message) {
 	if m.SenderMachine == b.n.Store.Identity.MachineID || !b.granted(m.SenderMachine) {
-		log.Printf("porter: ignored control from ungranted or local sender")
+		log.Printf("porter: ignored message from ungranted or local sender")
 		return
 	}
-	c, e := porter.ParseControl(m.Body)
+	c, e := porter.Parse(m.Body)
 	if e != nil {
-		log.Printf("porter: %v", e)
+		log.Printf("porter: %v %q from %s:%s", e, m.Body[:min(len(m.Body), 80)], m.SenderMachine, m.SenderAgent)
 		return
 	}
+	peer := m.SenderMachine
+	switch c.Type {
+	case porter.TypeSubscribe, porter.TypeUnsubscribe:
+		b.subscribe(peer, m.SenderAgent, c)
+	case porter.TypeSet:
+		if !b.config().IsApprover(peer) {
+			log.Printf("porter: ignored porter.set from non-approver")
+			return
+		}
+		e = b.state.Update(func(s *porter.State) error {
+			if a := s.Agents[c.Agent]; a != nil {
+				s.SetSpecial(a, *c.Special)
+			}
+			return nil
+		})
+	case porter.TypeRevoke:
+		if !b.config().IsApprover(peer) {
+			log.Printf("porter: ignored porter.revoke from non-approver")
+			return
+		}
+		e = porter.UpdateJSON(b.trustsPath, func(t *porter.Trusts) (bool, error) {
+			_, ok := t.Trusts[c.Trust]
+			delete(t.Trusts, c.Trust)
+			return ok, nil
+		})
+	case porter.TypeAnswer:
+		b.answer(peer, c.ID, c.Choice)
+	case porter.TypeSubscribed:
+		b.mu.Lock()
+		b.peerOK[peer] = true
+		b.mu.Unlock()
+	case porter.TypeSnapshot, porter.TypeUpdate, porter.TypeRemove:
+		e = b.cache.Apply(peer, c)
+	}
+	if e != nil {
+		log.Printf("porter %s: %v", c.Type, e)
+	}
+}
+
+func (b *porterBridge) subscribe(peer, agent string, c porter.Inbound) {
+	cfg := b.config()
 	b.mu.Lock()
 	var sub porter.Subscriber
 	if c.Type == porter.TypeSubscribe {
-		sub = porter.Subscriber{Peer: m.SenderMachine, Agent: m.SenderAgent, Push: c.Push, Since: time.Now().UTC()}
-		b.subs[m.SenderMachine] = sub
+		sub = porter.Subscriber{Peer: peer, Agent: agent, Topics: c.Topics, Push: c.Push, Since: time.Now().UTC()}
+		b.subs[peer] = sub
 	} else {
-		delete(b.subs, m.SenderMachine)
+		delete(b.subs, peer)
 	}
-	e = b.file.Save(b.subs)
+	e := b.file.Save(b.subs)
 	b.mu.Unlock()
 	if e != nil {
 		log.Printf("porter subscribers: %v", e)
 	}
-	if c.Type == porter.TypeSubscribe {
-		b.snapshot(sub)
+	if c.Type != porter.TypeSubscribe {
+		return
+	}
+	reply := porter.Subscribed{Type: porter.TypeSubscribed, V: porter.WireVersion, Machine: b.machine(), Topics: []string{}, Refused: []string{},
+		Approver: cfg.IsApprover(peer), Push: sub.Push != nil, Version: Version}
+	for _, t := range c.Topics {
+		if slices.Contains(porter.Topics, t) && cfg.Shares(t, peer) {
+			reply.Topics = append(reply.Topics, t)
+		} else {
+			reply.Refused = append(reply.Refused, t)
+		}
+	}
+	b.send(sub.Peer+":"+sub.Agent, reply)
+	for _, t := range reply.Topics {
+		b.snapshot(sub, t)
 	}
 }
 
@@ -195,38 +305,107 @@ func (b *porterBridge) current() []porter.Subscriber {
 	return out
 }
 
+// receiving returns current subscribers that asked for topic and may get it.
+func (b *porterBridge) receiving(topic string) []porter.Subscriber {
+	cfg := b.config()
+	out := []porter.Subscriber{}
+	for _, s := range b.current() {
+		if s.Wants(topic) && cfg.Shares(topic, s.Peer) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func (b *porterBridge) machine() string { return b.n.Store.Setting("name") }
 
-func (b *porterBridge) send(s porter.Subscriber, v any) {
-	_, e := b.n.Send(b.n.ctx, SendRequest{SessionID: b.session.ID, To: s.Peer + ":" + s.Agent, Body: string(marshal(v))})
+func (b *porterBridge) porterSession() Session {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.session
+}
+
+func (b *porterBridge) send(to string, v any) error {
+	s := b.porterSession()
+	if s.ID == "" {
+		return problem(503, "porter_not_ready", "porter is not attached yet")
+	}
+	_, e := b.n.Send(b.n.ctx, SendRequest{SessionID: s.ID, To: to, Body: string(marshal(v))})
 	if e != nil {
 		log.Printf("porter send: %s", errorCode(e))
 	}
+	return e
 }
 
-func (b *porterBridge) snapshot(s porter.Subscriber) {
-	st, e := b.state.Load()
-	if e != nil {
-		log.Printf("porter: %v", e)
-		return
+func (b *porterBridge) snapshot(s porter.Subscriber, topic string) {
+	to := s.Peer + ":" + s.Agent
+	switch topic {
+	case porter.TopicAgents:
+		st, e := b.state.Load()
+		if e != nil {
+			log.Printf("porter: %v", e)
+			return
+		}
+		b.send(to, porter.NewSnapshot(b.machine(), topic, porter.AgentItems(st), MaxBody-1024))
+	case porter.TopicStatus:
+		b.send(to, porter.NewValueSnapshot(b.machine(), topic, b.status()))
+	case porter.TopicTrusts:
+		items := []any{}
+		for _, t := range b.loadTrusts().List() {
+			items = append(items, t.Item())
+		}
+		b.send(to, porter.NewSnapshot(b.machine(), topic, items, MaxBody-1024))
 	}
-	b.send(s, porter.NewSnapshot(b.machine(), st, MaxBody-1024))
 }
 
 func (b *porterBridge) snapshotAll() {
+	cfg := b.config()
 	for _, s := range b.current() {
-		b.snapshot(s)
+		for _, t := range porter.Topics {
+			if s.Wants(t) && cfg.Shares(t, s.Peer) {
+				b.snapshot(s, t)
+			}
+		}
 	}
 }
 
-// poll publishes changes when state.json was replaced since the last look.
-// Writers always rename a new file into place, so a new inode means a change.
-func (b *porterBridge) poll() {
-	info, e := os.Stat(b.state.Path)
-	if e != nil {
+func (b *porterBridge) status() porter.Status {
+	running := 0
+	if st, e := b.state.Load(); e == nil {
+		running = st.Running()
+	}
+	return porter.CollectStatus(b.machine(), Version, b.n.cfg.DataDir, running)
+}
+
+func (b *porterBridge) publishStatus() {
+	b.lastStatus = time.Now()
+	subs := b.receiving(porter.TopicStatus)
+	if len(subs) == 0 {
 		return
 	}
-	if b.seen != nil && os.SameFile(b.seen, info) && b.seen.ModTime().Equal(info.ModTime()) && b.seen.Size() == info.Size() {
+	u := porter.NewValueUpdate(b.machine(), porter.TopicStatus, b.status())
+	for _, s := range subs {
+		b.send(s.Peer+":"+s.Agent, u)
+	}
+}
+
+// changed reports whether path was replaced since seen. Writers always
+// rename a new file into place.
+func changed(path string, seen os.FileInfo) (os.FileInfo, bool) {
+	info, e := os.Stat(path)
+	if e != nil {
+		return seen, seen != nil
+	}
+	if seen != nil && os.SameFile(seen, info) && seen.ModTime().Equal(info.ModTime()) && seen.Size() == info.Size() {
+		return seen, false
+	}
+	return info, true
+}
+
+// poll publishes agent changes when state.json was replaced since the last look.
+func (b *porterBridge) poll() {
+	info, ok := changed(b.state.Path, b.seen)
+	if !ok {
 		return
 	}
 	st, e := b.state.Load()
@@ -237,32 +416,243 @@ func (b *porterBridge) poll() {
 	b.seen = info
 	prev := b.last
 	b.last = st.Agents
-	changed, removed := porter.Diff(prev, st.Agents)
-	if len(changed) == 0 && len(removed) == 0 {
-		return
-	}
+	changedAgents, removed := porter.Diff(prev, st.Agents)
 	machine := b.machine()
-	for _, s := range b.current() {
-		for _, a := range changed {
-			b.send(s, porter.AgentUpdate{Type: porter.TypeAgent, Machine: machine, Agent: a})
+	for _, s := range b.receiving(porter.TopicAgents) {
+		for _, a := range changedAgents {
+			b.send(s.Peer+":"+s.Agent, porter.NewUpdate(machine, porter.TopicAgents, a.View()))
 			if s.Push != nil && porter.PushWanted(prev[a.ID], a) {
-				b.notify(s, porter.NoticeFor(machine, a))
+				b.pushTo(s, porter.NoticeFor(machine, a.View()), nil)
 			}
 		}
 		for _, id := range removed {
-			b.send(s, porter.Remove{Type: porter.TypeRemove, Machine: machine, ID: id})
+			b.send(s.Peer+":"+s.Agent, porter.NewRemove(machine, porter.TopicAgents, id))
+		}
+	}
+	if r := st.Running(); r != b.running {
+		b.running = r
+		b.publishStatus()
+	}
+}
+
+func (b *porterBridge) loadTrusts() *porter.Trusts {
+	t, e := porter.LoadJSON[porter.Trusts](b.trustsPath)
+	if e != nil {
+		log.Printf("porter trusts: %v", e)
+		return &porter.Trusts{}
+	}
+	if t.Trusts == nil {
+		t.Trusts = map[string]porter.Trust{}
+	}
+	return t
+}
+
+// label is the trust label for a peer message delivered to a local agent.
+func (b *porterBridge) label(receiverID, senderID string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if info, ok := changed(b.trustsPath, b.trustInfo); ok || b.trusts == nil {
+		b.trusts, b.trustInfo = b.loadTrusts(), info
+	}
+	return b.trusts.Label(receiverID, senderID)
+}
+
+func (b *porterBridge) pollTrusts() {
+	info, ok := changed(b.trustsPath, b.trustSeen)
+	if !ok {
+		return
+	}
+	b.trustSeen = info
+	next := b.loadTrusts().Trusts
+	prev := b.lastTrusts
+	b.lastTrusts = next
+	machine := b.machine()
+	for _, s := range b.receiving(porter.TopicTrusts) {
+		for id, t := range next {
+			if p, ok := prev[id]; !ok || p != t {
+				b.send(s.Peer+":"+s.Agent, porter.NewUpdate(machine, porter.TopicTrusts, t.Item()))
+			}
+		}
+		for id := range prev {
+			if _, ok := next[id]; !ok {
+				b.send(s.Peer+":"+s.Agent, porter.NewRemove(machine, porter.TopicTrusts, id))
+			}
 		}
 	}
 }
 
-// notify sends one encrypted push without blocking message handling. A dead
-// token is forgotten; the subscription itself stays.
-func (b *porterBridge) notify(s porter.Subscriber, notice porter.Notice) {
+// maintain runs the slow periodic duties.
+func (b *porterBridge) maintain() {
+	now := time.Now()
+	b.linkIdentities()
+	if now.Sub(b.lastSweep) >= time.Minute {
+		b.lastSweep = now
+		if e := b.state.Update(func(s *porter.State) error { s.Sweep(now); return nil }); e != nil {
+			log.Printf("porter sweep: %v", e)
+		}
+	}
+	interval := b.n.cfg.PorterStatusInterval
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	if now.Sub(b.lastStatus) >= interval {
+		b.publishStatus()
+	}
+	b.expireQuestions(now)
+	b.subscribePeers(now)
+	if now.Sub(b.lastPrune) >= time.Minute {
+		b.lastPrune = now
+		b.pruneSessionTrusts(now)
+	}
+}
+
+// linkIdentities attaches each live agent's comms identity, found through
+// comms' own agent_sessions.harness_session_id (read-only).
+func (b *porterBridge) linkIdentities() {
+	st, e := b.state.Load()
+	if e != nil {
+		return
+	}
+	found := map[string]porter.Identity{}
+	for id, a := range st.Agents {
+		if a.Status == porter.StatusEnded || a.Parent != "" {
+			continue
+		}
+		if v, ok := b.n.Store.harnessIdentity(id); ok {
+			v.Address = b.machine() + ":" + v.Alias
+			if a.Identity == nil || *a.Identity != v {
+				found[id] = v
+			}
+		}
+	}
+	if len(found) == 0 {
+		return
+	}
+	e = b.state.Update(func(s *porter.State) error {
+		for id, v := range found {
+			if a := s.Agents[id]; a != nil {
+				s.SetIdentity(a, v)
+			}
+		}
+		return nil
+	})
+	if e != nil {
+		log.Printf("porter identities: %v", e)
+	}
+}
+
+func (s *Store) harnessIdentity(harnessID string) (porter.Identity, bool) {
+	var v porter.Identity
+	e := s.ReadDB.QueryRow(`SELECT a.alias,a.persistent FROM agent_sessions s JOIN agents a ON a.id=s.agent_id WHERE s.harness_session_id=? AND s.ended_at IS NULL AND s.harness IN('claude','codex') AND a.retired_at IS NULL LIMIT 1`, harnessID).Scan(&v.Alias, &v.Persistent)
+	return v, e == nil
+}
+
+// subscribePeers subscribes to every granted peer's porter until it replies.
+// One directory lookup per round finds which peers run porter at all.
+func (b *porterBridge) subscribePeers(now time.Time) {
+	every := b.n.cfg.PorterResubscribe
+	if every <= 0 {
+		every = 10 * time.Minute
+	}
+	if now.Sub(b.lastSubscribe) < every || b.n.currentBrokerURL() == "" {
+		return
+	}
+	b.lastSubscribe = now
+	grants, e := b.n.Store.Grants()
+	if e != nil {
+		return
+	}
+	due := map[string]bool{}
+	b.mu.Lock()
+	for _, g := range grants {
+		if g.Messages && !b.peerOK[g.Grantee] {
+			due[g.Grantee] = true
+		}
+	}
+	b.mu.Unlock()
+	if len(due) == 0 {
+		return
+	}
+	var who []Presence
+	if e := b.n.brokerRequest(b.n.ctx, "GET", "/v1/who", nil, &who); e != nil {
+		return
+	}
+	for _, p := range who {
+		if due[p.MachineID] && p.Alias == PorterAlias {
+			b.send(p.MachineID+":"+p.AgentID, map[string]any{"type": porter.TypeSubscribe, "v": porter.WireVersion, "topics": porter.Topics})
+		}
+	}
+}
+
+// pruneSessionTrusts drops session trusts whose sender identity has been
+// absent from the broker's directory for the grace period: an ephemeral
+// identity never returns once it ends.
+func (b *porterBridge) pruneSessionTrusts(now time.Time) {
+	t := b.loadTrusts()
+	hasSession := false
+	for _, v := range t.Trusts {
+		hasSession = hasSession || v.Scope == porter.TrustSession
+	}
+	if !hasSession || b.n.currentBrokerURL() == "" {
+		return
+	}
+	var who []Presence
+	if e := b.n.brokerRequest(b.n.ctx, "GET", "/v1/who", nil, &who); e != nil {
+		return
+	}
+	present := map[string]bool{}
+	for _, p := range who {
+		present[p.MachineID+":"+p.AgentID] = true
+	}
+	grace := b.n.cfg.PorterTrustGrace
+	if grace <= 0 {
+		grace = 10 * time.Minute
+	}
+	dead := map[string]bool{}
+	for id, v := range t.Trusts {
+		if v.Scope != porter.TrustSession || present[v.SenderID] {
+			delete(b.trustMissing, id)
+			continue
+		}
+		if since, ok := b.trustMissing[id]; !ok {
+			b.trustMissing[id] = now
+		} else if now.Sub(since) >= grace {
+			dead[id] = true
+			delete(b.trustMissing, id)
+		}
+	}
+	if len(dead) == 0 {
+		return
+	}
+	e := porter.UpdateJSON(b.trustsPath, func(t *porter.Trusts) (bool, error) {
+		for id := range dead {
+			delete(t.Trusts, id)
+		}
+		return true, nil
+	})
+	if e != nil {
+		log.Printf("porter trusts: %v", e)
+	}
+}
+
+// pushTo sends one encrypted push without blocking message handling. A dead
+// token is forgotten; the subscription itself stays. When n is set it is a
+// notification push; otherwise notice describes an agent.
+func (b *porterBridge) pushTo(s porter.Subscriber, notice any, n *porter.Notify) {
+	if s.Push == nil {
+		return
+	}
 	peer, e := b.n.Store.Peer(s.Peer)
 	if e != nil {
 		return
 	}
-	data, e := porter.PushData(notice, b.n.Store.Identity.MachineID, peer.PublicKey, b.n.Store.Identity.PrivateKey)
+	id := b.n.Store.Identity
+	var data map[string]string
+	if n != nil {
+		data, e = porter.NotifyPushData(*n, id.MachineID, peer.PublicKey, id.PrivateKey)
+	} else {
+		data, e = porter.PushData(notice, id.MachineID, peer.PublicKey, id.PrivateKey)
+	}
 	if e != nil {
 		log.Printf("porter push: %v", e)
 		return

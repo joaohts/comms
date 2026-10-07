@@ -16,7 +16,7 @@ import (
 	"github.com/joaohts/comms/internal/porter"
 )
 
-var Version = "0.1.0-dev"
+var Version = "0.2.0"
 
 const ProtocolVersion = 1
 const MessageTTL = 7 * 24 * time.Hour
@@ -44,6 +44,12 @@ type Config struct {
 	// Porter publishes local agent state to subscribed peers (opt-in).
 	Porter     bool
 	PorterPush porter.Pusher `json:"-"`
+	// PorterConfig overrides the porter config path (default $PORTER_CONFIG
+	// or ~/.config/porter/config.toml).
+	PorterConfig         string        `json:"-"`
+	PorterStatusInterval time.Duration `json:"-"`
+	PorterResubscribe    time.Duration `json:"-"`
+	PorterTrustGrace     time.Duration `json:"-"`
 }
 
 func DefaultConfig() Config {
@@ -181,6 +187,9 @@ type Message struct {
 	AttemptID        string `json:"attempt_id,omitempty"`
 	AttachmentID     string `json:"attachment_id,omitempty"`
 	Hash             string `json:"-"`
+	// Trust is porter's label for a peer message delivered to a local agent
+	// (never stored): "trusted: session", "trusted: always" or "untrusted".
+	Trust string `json:"trust,omitempty"`
 }
 
 func (m Message) Key() string { return m.SenderMachine + "/" + m.ID }

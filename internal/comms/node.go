@@ -68,6 +68,7 @@ type Node struct {
 	brokerOnline      atomic.Bool
 	httpClient        *http.Client
 	querySlots        chan struct{}
+	porter            *porterBridge
 }
 
 func NewNode(cfg Config) (*Node, error) {
@@ -109,6 +110,9 @@ func NewNode(cfg Config) (*Node, error) {
 	}
 	n := &Node{Store: s, cfg: cfg, lock: f, wake: make(chan struct{}, 1), outWake: make(chan struct{}, 1), syncWake: make(chan struct{}, 1), jobs: make(chan Message, cfg.Workers), receivers: map[string]*receiver{}, busy: map[string]bool{}, waits: map[string]*handoffWait{}, observers: map[chan Event]struct{}{}, querySlots: make(chan struct{}, 2), httpClient: &http.Client{Timeout: 15 * time.Second, CheckRedirect: noBrokerRedirect}}
 	n.brokerURL = s.Setting("broker_url")
+	if cfg.Porter {
+		n.porter = newPorterBridge(n)
+	}
 	if s.Setting("name") == "" {
 		name, _ := os.Hostname()
 		if !validAlias(name) {
@@ -647,6 +651,7 @@ func (n *Node) Handler() http.Handler {
 		nodeJSON(w, 200, map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("GET /v1/events", n.events)
+	n.porterRoutes(mux)
 	mux.HandleFunc("POST /v1/history", func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case n.querySlots <- struct{}{}:
@@ -1079,6 +1084,9 @@ func (n *Node) deliver(m Message) {
 	m, e = n.Store.Claim(m, s.ID)
 	if e != nil {
 		return
+	}
+	if n.porter != nil && m.SenderMachine != n.Store.Identity.MachineID {
+		m.Trust = n.porter.label(a.ID, m.SenderMachine+":"+m.SenderAgent)
 	}
 	wait := &handoffWait{s.ID, m, make(chan Handoff, 1)}
 	n.mu.Lock()
