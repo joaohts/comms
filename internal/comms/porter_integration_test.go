@@ -66,6 +66,7 @@ func newPorterNode(t *testing.T, change func(*Config)) *porterNode {
 		c.Porter, c.PorterPush, c.PorterConfig = true, push, cfgPath
 		c.PorterStatusInterval = time.Hour
 		c.PorterResubscribe = 2 * time.Second
+		c.Lease = 10 * time.Second // headroom for -race on three nodes
 		if change != nil {
 			change(c)
 		}
@@ -133,7 +134,7 @@ func discoverable(t *testing.T, from *nodeIntegrationFixture, peer, alias string
 // node running the app agent. The phone is the approver on both machines.
 func newPorterFixture(t *testing.T) *porterFixture {
 	t.Helper()
-	f := &porterFixture{mac: newPorterNode(t, nil), pi: newPorterNode(t, nil), phone: newNodeIntegration(t, nil)}
+	f := &porterFixture{mac: newPorterNode(t, nil), pi: newPorterNode(t, nil), phone: newNodeIntegration(t, func(c *Config) { c.Lease = 10 * time.Second })}
 	pairAll(t, map[string]*nodeIntegrationFixture{"mac": f.mac.nodeIntegrationFixture, "pi": f.pi.nodeIntegrationFixture, "phone": f.phone})
 	for _, n := range []*porterNode{f.mac, f.pi} {
 		c := porter.DefaultConfig()
