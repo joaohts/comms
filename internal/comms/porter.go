@@ -46,17 +46,18 @@ type porterBridge struct {
 	trustInfo os.FileInfo
 
 	// Owned by the attach goroutine.
-	last          map[string]*porter.Agent
-	seen          os.FileInfo
-	lastTrusts    map[string]porter.Trust
-	trustSeen     os.FileInfo
-	running       int
-	lastSubscribe time.Time
-	peerOK        map[string]bool
-	trustMissing  map[string]time.Time
-	lastSweep     time.Time
-	lastStatus    time.Time
-	lastPrune     time.Time
+	last             map[string]*porter.Agent
+	seen             os.FileInfo
+	lastTrusts       map[string]porter.Trust
+	trustSeen        os.FileInfo
+	running          int
+	lastSubscribe    time.Time
+	subscribeBackoff time.Duration
+	peerOK           map[string]bool
+	trustMissing     map[string]time.Time
+	lastSweep        time.Time
+	lastStatus       time.Time
+	lastPrune        time.Time
 }
 
 func newPorterBridge(n *Node) *porterBridge {
@@ -616,16 +617,42 @@ func (b *porterBridge) subscribePeers(now time.Time) {
 	if len(due) == 0 {
 		return
 	}
+	// A peer whose porter isn't in the directory yet (it is restarting, or the
+	// lookup failed) is retried soon rather than after a full round.
+	// Backoff doubles from porterSubscribeRetry up to a full round, so peers
+	// that never run porter don't cost a lookup every 30s.
+	retrySoon := func() {
+		if b.subscribeBackoff < porterSubscribeRetry {
+			b.subscribeBackoff = porterSubscribeRetry
+		} else if b.subscribeBackoff < every {
+			b.subscribeBackoff *= 2
+		}
+		if b.subscribeBackoff < every {
+			b.lastSubscribe = now.Add(b.subscribeBackoff - every)
+		}
+	}
 	var who []Presence
 	if e := b.n.brokerRequest(b.n.ctx, "GET", "/v1/who", nil, &who); e != nil {
+		retrySoon()
 		return
 	}
+	sent := 0
 	for _, p := range who {
 		if due[p.MachineID] && p.Alias == PorterAlias {
 			b.send(p.MachineID+":"+p.AgentID, map[string]any{"type": porter.TypeSubscribe, "v": porter.WireVersion, "topics": porter.Topics})
+			sent++
 		}
 	}
+	if sent < len(due) {
+		retrySoon()
+	} else {
+		b.subscribeBackoff = 0
+	}
 }
+
+// porterSubscribeRetry is how soon subscribePeers looks again for a granted
+// peer whose porter was not found.
+const porterSubscribeRetry = 30 * time.Second
 
 // pruneSessionTrusts drops session trusts whose sender identity has been
 // absent from the broker's directory for the grace period: an ephemeral
