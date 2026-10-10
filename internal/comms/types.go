@@ -11,10 +11,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
+
+	"github.com/joaohts/comms/internal/porter"
 )
 
-var Version = "0.1.0-dev"
+var Version = "0.2.0"
 
 const ProtocolVersion = 1
 const MessageTTL = 7 * 24 * time.Hour
@@ -39,6 +42,16 @@ type Config struct {
 	AllowInsecure        bool
 	BrokerServiceKey     string `json:"-"`
 	BrokerServiceKeyFile string `json:"-"`
+	// Porter publishes local agent state to subscribed peers (opt-in).
+	Porter     bool
+	PorterPush porter.Pusher `json:"-"`
+	// PorterConfig overrides the porter config path (default $PORTER_CONFIG
+	// or ~/.config/porter/config.toml).
+	PorterConfig         string        `json:"-"`
+	PorterStatusInterval time.Duration `json:"-"`
+	PorterResubscribe    time.Duration `json:"-"`
+	PorterTrustGrace     time.Duration `json:"-"`
+	PorterAwayCheck      time.Duration `json:"-"` // default porter.AwayCheck
 }
 
 func DefaultConfig() Config {
@@ -176,6 +189,9 @@ type Message struct {
 	AttemptID        string `json:"attempt_id,omitempty"`
 	AttachmentID     string `json:"attachment_id,omitempty"`
 	Hash             string `json:"-"`
+	// Trust is porter's label for a peer message delivered to a local agent
+	// (never stored): "trusted: session", "trusted: always" or "untrusted".
+	Trust string `json:"trust,omitempty"`
 }
 
 func (m Message) Key() string { return m.SenderMachine + "/" + m.ID }
@@ -301,4 +317,17 @@ func key32(b []byte) (*[32]byte, error) {
 	var v [32]byte
 	copy(v[:], b)
 	return &v, nil
+}
+
+// Fingerprint is how people compare a machine's public key out of band (the
+// phone app shows the same): the first 32 hex characters of SHA-256 over the
+// raw 32-byte X25519 public key, in groups of 4 separated by spaces.
+func Fingerprint(publicKey []byte) string {
+	sum := sha256.Sum256(publicKey)
+	h := hex.EncodeToString(sum[:16])
+	groups := make([]string, 0, 8)
+	for i := 0; i < len(h); i += 4 {
+		groups = append(groups, h[i:i+4])
+	}
+	return strings.Join(groups, " ")
 }

@@ -23,6 +23,10 @@ func main() {
 		if errors.Is(err, context.Canceled) {
 			return
 		}
+		var exit exitError
+		if errors.As(err, &exit) {
+			os.Exit(exit.code)
+		}
 		code := "command_failed"
 		var api *client.Error
 		if errors.As(err, &api) {

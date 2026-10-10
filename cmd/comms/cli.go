@@ -14,6 +14,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/joaohts/comms/internal/client"
@@ -93,6 +94,9 @@ func (a *app) run(ctx context.Context, args []string) error {
 	if args[0] == "codex" {
 		return a.codex(ctx, cfg, socket, args[1:])
 	}
+	if args[0] == "porter" {
+		return a.porter(ctx, cfg.DataDir, socket, args[1:])
+	}
 	if socket == "" {
 		socket = filepath.Join(cfg.DataDir, "node.sock")
 	}
@@ -132,6 +136,8 @@ func (a *app) run(ctx context.Context, args []string) error {
 		return a.pair(ctx, args)
 	case "export":
 		return a.exportIdentity(ctx, args)
+	case "fingerprint":
+		return a.fingerprint(ctx, args)
 	case "grant", "ungrant":
 		return a.grant(ctx, args, args0 == "grant")
 	case "broker":
@@ -273,9 +279,9 @@ func (a *app) list(ctx context.Context, path string, args []string, kind string)
 		if err := json.Unmarshal(out, &items); err != nil {
 			return err
 		}
-		fmt.Fprintln(w, "ALIAS\tMACHINE ID\tPINNED PUBLIC KEY")
+		fmt.Fprintln(w, "ALIAS\tMACHINE ID\tFINGERPRINT\tPINNED PUBLIC KEY")
 		for _, p := range items {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", p.Alias, p.MachineID, base64.StdEncoding.EncodeToString(p.PublicKey))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.Alias, p.MachineID, comms.Fingerprint(p.PublicKey), base64.StdEncoding.EncodeToString(p.PublicKey))
 		}
 	case "grants":
 		var items []comms.Grant
@@ -484,7 +490,59 @@ func (a *app) exportIdentity(ctx context.Context, args []string) error {
 	if *alias == "" {
 		*alias = status.Name
 	}
-	return a.output(comms.Peer{MachineID: status.MachineID, PublicKey: status.PublicKey, Alias: *alias})
+	fp := comms.Fingerprint(status.PublicKey)
+	// The bundle is what comms pair (and the phone) reads; pair ignores the
+	// fingerprint, which is for comparing keys out of band.
+	bundle := struct {
+		comms.Peer
+		Fingerprint string `json:"fingerprint"`
+	}{comms.Peer{MachineID: status.MachineID, PublicKey: status.PublicKey, Alias: *alias}, fp}
+	if err := a.output(bundle); err != nil || a.jsonOutput {
+		return err
+	}
+	_, err := fmt.Fprintf(a.out, "fingerprint: %s\n", fp)
+	return err
+}
+
+// fingerprint prints this machine's key fingerprint, or a pinned peer's.
+func (a *app) fingerprint(ctx context.Context, args []string) error {
+	if len(args) > 1 {
+		return usageError("usage: comms fingerprint [PEER]")
+	}
+	var p comms.Peer
+	if len(args) == 0 {
+		var status struct {
+			MachineID string `json:"machine_id"`
+			PublicKey []byte `json:"public_key"`
+			Name      string `json:"name"`
+		}
+		if err := a.c.Do(ctx, "GET", "/v1/status", nil, &status); err != nil {
+			return err
+		}
+		p = comms.Peer{MachineID: status.MachineID, Alias: status.Name, PublicKey: status.PublicKey}
+	} else {
+		var peers []comms.Peer
+		if err := a.c.Do(ctx, "GET", "/v1/peers", nil, &peers); err != nil {
+			return err
+		}
+		for _, v := range peers {
+			if v.Alias == args[0] || v.MachineID == args[0] {
+				p = v
+			}
+		}
+		if p.MachineID == "" {
+			return &client.Error{Code: "unknown_peer", Message: "peer " + args[0] + " is not paired"}
+		}
+	}
+	if len(p.PublicKey) != 32 {
+		return &client.Error{Code: "no_key", Message: "no 32-byte public key for " + p.MachineID}
+	}
+	fp := comms.Fingerprint(p.PublicKey)
+	if a.jsonOutput {
+		return a.output(map[string]string{"machine_id": p.MachineID, "alias": p.Alias, "fingerprint": fp})
+	}
+	_, err := fmt.Fprintln(a.out, fp)
+	return err
 }
 
 func (a *app) pair(ctx context.Context, args []string) error {
@@ -518,8 +576,12 @@ func (a *app) pair(ctx context.Context, args []string) error {
 	} else if !*stdin && *file != "-" {
 		return usageError("supply a verified identity bundle using --file FILE or --stdin")
 	}
-	var p comms.Peer
-	if err := json.NewDecoder(io.LimitReader(reader, 64<<10)).Decode(&p); err != nil {
+	raw, err := io.ReadAll(io.LimitReader(reader, 64<<10))
+	if err != nil {
+		return err
+	}
+	p, err := parseBundle(raw)
+	if err != nil {
 		return usageError("invalid identity bundle: " + err.Error())
 	}
 	if *alias != "" {
@@ -530,6 +592,43 @@ func (a *app) pair(ctx context.Context, args []string) error {
 	}
 	p.VerifiedAt = time.Now().UTC().UnixMilli()
 	return a.mutation(ctx, "PUT", "/v1/peers/"+url.PathEscape(p.MachineID), p)
+}
+
+// parseBundle reads an identity bundle as exported by comms export or pasted
+// from the phone: surrounding text, code fences, a BOM, smart whitespace and
+// line-wrapped or URL-safe base64 keys are tolerated.
+func parseBundle(raw []byte) (comms.Peer, error) {
+	var p comms.Peer
+	s := strings.TrimPrefix(string(raw), "\ufeff")
+	start, end := strings.Index(s, "{"), strings.LastIndex(s, "}")
+	if start < 0 || end < start {
+		return p, fmt.Errorf("no JSON object found")
+	}
+	var v struct {
+		MachineID string `json:"machine_id"`
+		Alias     string `json:"alias"`
+		PublicKey string `json:"public_key"`
+	}
+	if err := json.Unmarshal([]byte(s[start:end+1]), &v); err != nil {
+		return p, err
+	}
+	key := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, v.PublicKey)
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		if b, err := enc.DecodeString(key); err == nil {
+			p.PublicKey = b
+			break
+		}
+	}
+	if p.PublicKey == nil && key != "" {
+		return p, fmt.Errorf("public_key is not base64")
+	}
+	p.MachineID, p.Alias = strings.TrimSpace(v.MachineID), strings.TrimSpace(v.Alias)
+	return p, nil
 }
 
 func (a *app) grant(ctx context.Context, args []string, allow bool) error {
@@ -783,6 +882,7 @@ func (a *app) serve(ctx context.Context, cfg comms.Config, args []string) error 
 	f.DurationVar(&cfg.Lease, "lease", cfg.Lease, "")
 	f.DurationVar(&cfg.Drain, "drain", cfg.Drain, "")
 	f.BoolVar(&cfg.AllowInsecure, "allow-insecure", false, "")
+	f.BoolVar(&cfg.Porter, "porter", false, "run porter: share topics, notifications, approvals")
 	f.IntVar(&cfg.LocalCount, "local-count", cfg.LocalCount, "")
 	f.Int64Var(&cfg.LocalBytes, "local-bytes", cfg.LocalBytes, "")
 	f.IntVar(&cfg.BrokerCount, "broker-count", cfg.BrokerCount, "")
@@ -816,7 +916,8 @@ func (a *app) serve(ctx context.Context, cfg comms.Config, args []string) error 
 func (a *app) help() error {
 	_, err := fmt.Fprint(a.out, `comms — local-first encrypted agent communication
 
-  serve [--broker-listen HOST:PORT]      Run local node and optional broker
+  serve [--broker-listen HOST:PORT] [--porter]
+                                      Run local node, optional broker and porter
   codex [resume THREAD] [CODEX OPTIONS] Launch native tool-output Codex comms
   claude [CLAUDE OPTIONS]              Launch Claude with the node's receiver mode
   claude-receiver [monitor|channel]    Read or set Claude's mode for future launches
@@ -830,6 +931,7 @@ func (a *app) help() error {
   events                              Observe state without consuming mail
   status [MESSAGE_ID] | stats          Node/message state and local statistics
   export [--alias NAME]                Export public identity for pairing
+  fingerprint [PEER]                  Key fingerprint to compare out of band (self by default)
   pair --file FILE [--alias NAME]       Import an out-of-band verified identity
   peers | grants                      List pinned peers and permissions
   grant PEER [--read-history]          Grant discovery/messaging/history
@@ -838,6 +940,16 @@ func (a *app) help() error {
   prune --before DATE                 Delete completed history content
   retire AGENT                        Retire an identity explicitly
   version                             Release and protocol versions
+  porter setup --approver PEER        Write ~/.config/porter/config.toml
+  porter install-hooks [--uninstall]  Register porter hooks for Claude Code and Codex
+  porter event --agent ID --kind KIND  Record agent state (start|prompt|needs|stop|end|update)
+  porter status [--all]               Local agents (--all: cached peer machines too)
+  porter get MACHINE TOPIC            Cached topic value from a peer (agents|status|trusts)
+  porter notify --to PEER --title T --body B --reason R [--ask "A,B" [--draft TEXT]] [--from ALIAS]
+                                      Notify a phone (encrypted push); --ask waits for the answer
+  porter ask "TEXT"                   Ask the approvers: allow|deny|timeout (exit 0|2|3)
+  porter ask-trust --sender ID        Ask whether to trust a peer agent's orders
+  porter trust [list|revoke ID]       Local trust store
 
 Global: --json (full details), --compact (small JSON for routine agent calls),
         --data-dir PATH, --socket PATH

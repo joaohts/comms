@@ -415,27 +415,39 @@ func (n *Node) brokerSender() {
 			log.Printf("outgoing queue: %v", e)
 			continue
 		}
+		// Messages to one recipient agent are forwarded one at a time in queue
+		// order (created_at, id): the broker streams in arrival order and the
+		// peer delivers what it has, so parallel forwards would reorder them.
+		// A recipient skipped this round stays skipped, so a later message never
+		// overtakes an earlier one. Other recipients and receipts run in parallel.
+		skipped := map[string]bool{}
 		for _, m := range pending {
+			key := m.Key()
+			if m.Kind == "message" {
+				key = "to/" + m.RecipientMachine + ":" + m.RecipientAgent
+			}
 			activeMu.Lock()
-			busy := active[m.Key()]
+			busy := active[key]
 			activeMu.Unlock()
-			if busy {
+			if busy || skipped[key] {
+				skipped[key] = true
 				continue
 			}
 			select {
 			case sem <- struct{}{}:
 			default:
+				skipped[key] = true
 				continue
 			}
 			activeMu.Lock()
-			active[m.Key()] = true
+			active[key] = true
 			activeMu.Unlock()
 			tasks.Add(1)
-			go func(m Message) {
+			go func(m Message, key string) {
 				defer tasks.Done()
 				defer func() {
 					activeMu.Lock()
-					delete(active, m.Key())
+					delete(active, key)
 					activeMu.Unlock()
 					<-sem
 					select {
@@ -457,7 +469,7 @@ func (n *Node) brokerSender() {
 						log.Printf("transport outcome: %v", se)
 					}
 				}
-			}(m)
+			}(m, key)
 		}
 	}
 }

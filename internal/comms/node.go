@@ -39,6 +39,7 @@ type handoffWait struct {
 }
 type Node struct {
 	Store             *Store
+	lastCreated       atomic.Int64 // strictly increasing send timestamps; see createdAt
 	cfg               Config
 	ctx               context.Context
 	cancel            context.CancelFunc
@@ -68,6 +69,7 @@ type Node struct {
 	brokerOnline      atomic.Bool
 	httpClient        *http.Client
 	querySlots        chan struct{}
+	porter            *porterBridge
 }
 
 func NewNode(cfg Config) (*Node, error) {
@@ -109,6 +111,9 @@ func NewNode(cfg Config) (*Node, error) {
 	}
 	n := &Node{Store: s, cfg: cfg, lock: f, wake: make(chan struct{}, 1), outWake: make(chan struct{}, 1), syncWake: make(chan struct{}, 1), jobs: make(chan Message, cfg.Workers), receivers: map[string]*receiver{}, busy: map[string]bool{}, waits: map[string]*handoffWait{}, observers: map[chan Event]struct{}{}, querySlots: make(chan struct{}, 2), httpClient: &http.Client{Timeout: 15 * time.Second, CheckRedirect: noBrokerRedirect}}
 	n.brokerURL = s.Setting("broker_url")
+	if cfg.Porter {
+		n.porter = newPorterBridge(n)
+	}
 	if s.Setting("name") == "" {
 		name, _ := os.Hostname()
 		if !validAlias(name) {
@@ -189,6 +194,10 @@ func (n *Node) Start(parent context.Context) error {
 	go func() { defer n.background.Done(); n.scheduler() }()
 	go func() { defer n.background.Done(); n.maintenance() }()
 	go func() { defer n.background.Done(); n.brokerLoop() }()
+	if n.cfg.Porter {
+		n.background.Add(1)
+		go func() { defer n.background.Done(); n.runPorter() }()
+	}
 	n.notify()
 	return nil
 }
@@ -643,6 +652,7 @@ func (n *Node) Handler() http.Handler {
 		nodeJSON(w, 200, map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("GET /v1/events", n.events)
+	n.porterRoutes(mux)
 	mux.HandleFunc("POST /v1/history", func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case n.querySlots <- struct{}{}:
@@ -847,7 +857,7 @@ func (n *Node) Send(ctx context.Context, q SendRequest) (Message, error) {
 	if e != nil {
 		return zero, e
 	}
-	m := Message{ID: q.ID, SenderMachine: n.Store.Identity.MachineID, SenderAgent: s.AgentID, RecipientMachine: machine, RecipientAgent: agent, Kind: "message", Body: q.Body, State: "queued", CreatedAt: Now(), ExpiresAt: time.Now().Add(MessageTTL).UnixMilli(), Hash: hash}
+	m := Message{ID: q.ID, SenderMachine: n.Store.Identity.MachineID, SenderAgent: s.AgentID, RecipientMachine: machine, RecipientAgent: agent, Kind: "message", Body: q.Body, State: "queued", CreatedAt: n.createdAt(), ExpiresAt: time.Now().Add(MessageTTL).UnixMilli(), Hash: hash}
 	if machine != n.Store.Identity.MachineID {
 		if s.Scope != "global" {
 			return zero, problem(403, "local_only", "local attachment cannot send remotely")
@@ -887,6 +897,21 @@ func payloadFor(m Message) Payload {
 		p.Body = ""
 	}
 	return p
+}
+
+// createdAt stamps a send. Recipients deliver in (created_at, id) order, so
+// sends from this node within one millisecond must not tie: a random ID would
+// otherwise reorder, say, a porter.subscribed reply and the snapshots after it.
+func (n *Node) createdAt() int64 {
+	for {
+		last, now := n.lastCreated.Load(), Now()
+		if now <= last {
+			now = last + 1
+		}
+		if n.lastCreated.CompareAndSwap(last, now) {
+			return now
+		}
+	}
 }
 func (n *Node) resolve(ctx context.Context, ref string, remoteAllowed bool) (string, string, error) {
 	parts := strings.SplitN(ref, ":", 2)
@@ -1075,6 +1100,9 @@ func (n *Node) deliver(m Message) {
 	m, e = n.Store.Claim(m, s.ID)
 	if e != nil {
 		return
+	}
+	if n.porter != nil && m.SenderMachine != n.Store.Identity.MachineID {
+		m.Trust = n.porter.label(a.ID, m.SenderMachine+":"+m.SenderAgent)
 	}
 	wait := &handoffWait{s.ID, m, make(chan Handoff, 1)}
 	n.mu.Lock()

@@ -11,12 +11,14 @@ type PeerContent struct {
 	SenderMachine       string `json:"sender_machine_id"`
 	SenderAgent         string `json:"sender_agent_id"`
 	Body                string `json:"body"`
+	// Trust is porter's label when porter is on; see docs/PORTER.md.
+	Trust string `json:"trust,omitempty"`
 }
 
 func ContentForPeer(m Message) PeerContent {
 	return PeerContent{
 		Kind: "comms_peer_message", Authority: "external_peer_content",
 		OriginAuthenticated: true, ClaimsVerified: false,
-		MessageID: m.ID, SenderMachine: m.SenderMachine, SenderAgent: m.SenderAgent, Body: m.Body,
+		MessageID: m.ID, SenderMachine: m.SenderMachine, SenderAgent: m.SenderAgent, Body: m.Body, Trust: m.Trust,
 	}
 }
