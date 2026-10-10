@@ -528,6 +528,11 @@ func (b *Broker) putGrant(w http.ResponseWriter, r *http.Request, p brokerPrinci
 		brokerTransactionError(w, tx, problem(409, "stale_revision", "grant revision is stale or conflicts"))
 		return
 	}
+	// Nodes republish every grant on each sync. Only a newly allowed sender
+	// needs the stream replayed (its envelopes may have been skipped while
+	// denied); replaying on every unchanged republish resends all unacked
+	// envelopes from the start and starves newer ones behind the duplicates.
+	replay := grant.Messages && (errors.Is(err, sql.ErrNoRows) || !old.Messages)
 	_, err = tx.Exec(`INSERT INTO grants VALUES(?,?,?,?,?) ON CONFLICT(grantor_machine_id,grantee_machine_id) DO UPDATE SET allow_messages=excluded.allow_messages,allow_history=excluded.allow_history,revision=excluded.revision`, p.MachineID, peer, grant.Messages, grant.History, grant.Revision)
 	if err == nil {
 		err = tx.Commit()
@@ -547,7 +552,7 @@ func (b *Broker) putGrant(w http.ResponseWriter, r *http.Request, p brokerPrinci
 			}
 		}
 	}
-	if s := b.streams[p.MachineID]; s != nil {
+	if s := b.streams[p.MachineID]; s != nil && replay {
 		select {
 		case s.replay <- struct{}{}:
 		default:

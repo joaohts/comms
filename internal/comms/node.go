@@ -39,6 +39,7 @@ type handoffWait struct {
 }
 type Node struct {
 	Store             *Store
+	lastCreated       atomic.Int64 // strictly increasing send timestamps; see createdAt
 	cfg               Config
 	ctx               context.Context
 	cancel            context.CancelFunc
@@ -856,7 +857,7 @@ func (n *Node) Send(ctx context.Context, q SendRequest) (Message, error) {
 	if e != nil {
 		return zero, e
 	}
-	m := Message{ID: q.ID, SenderMachine: n.Store.Identity.MachineID, SenderAgent: s.AgentID, RecipientMachine: machine, RecipientAgent: agent, Kind: "message", Body: q.Body, State: "queued", CreatedAt: Now(), ExpiresAt: time.Now().Add(MessageTTL).UnixMilli(), Hash: hash}
+	m := Message{ID: q.ID, SenderMachine: n.Store.Identity.MachineID, SenderAgent: s.AgentID, RecipientMachine: machine, RecipientAgent: agent, Kind: "message", Body: q.Body, State: "queued", CreatedAt: n.createdAt(), ExpiresAt: time.Now().Add(MessageTTL).UnixMilli(), Hash: hash}
 	if machine != n.Store.Identity.MachineID {
 		if s.Scope != "global" {
 			return zero, problem(403, "local_only", "local attachment cannot send remotely")
@@ -896,6 +897,20 @@ func payloadFor(m Message) Payload {
 		p.Body = ""
 	}
 	return p
+}
+// createdAt stamps a send. Recipients deliver in (created_at, id) order, so
+// sends from this node within one millisecond must not tie: a random ID would
+// otherwise reorder, say, a porter.subscribed reply and the snapshots after it.
+func (n *Node) createdAt() int64 {
+	for {
+		last, now := n.lastCreated.Load(), Now()
+		if now <= last {
+			now = last + 1
+		}
+		if n.lastCreated.CompareAndSwap(last, now) {
+			return now
+		}
+	}
 }
 func (n *Node) resolve(ctx context.Context, ref string, remoteAllowed bool) (string, string, error) {
 	parts := strings.SplitN(ref, ":", 2)

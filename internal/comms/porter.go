@@ -213,6 +213,11 @@ func (b *porterBridge) handle(m Message) {
 	peer := m.SenderMachine
 	switch c.Type {
 	case porter.TypeSubscribe, porter.TypeUnsubscribe:
+		// Publish pending file changes first (to the existing subscribers), so
+		// the new snapshot matches what later updates are diffed against and
+		// is not followed by a stale update of the same state.
+		b.poll()
+		b.pollTrusts()
 		b.subscribe(peer, m.SenderAgent, c)
 	case porter.TypeSet:
 		if !b.config().IsApprover(peer) {
