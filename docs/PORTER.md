@@ -32,6 +32,7 @@ approvers = ["phone"]          # peers whose answers count; stored as machine id
 approvals = "auto"             # auto | phone | terminal
 ask_timeout = "2m"
 idle_threshold = "2m"
+recap = false                  # publish agent recaps (default false: never stored or sent)
 
 [share]                        # topic → "*" (all granted peers) or a list of peers
 agents = "*"
@@ -39,7 +40,9 @@ status = "*"
 ```
 
 `comms porter setup --approver <peer>` writes it. Aliases are resolved to
-immutable machine ids when written.
+immutable machine ids when written. Approvers are added only locally (setup or
+editing the file); an approver can remove itself from the phone
+(`porter.resign`), and no message can ever add one.
 
 ## Topics
 
@@ -104,6 +107,9 @@ messaging grant **and** the topic's share entry includes it (`trusts`: approvers
   "status": "running | needs_you | done | ended",
   "needs": {"kind": "permission | input", "text": "Bash: npm install"},
   "summary": "Researching comms/push design",
+  "recap": "- mapped the push path\n- fixed the broker replay\n- tests green",  // opt-in
+  "last_decision": {"choice": "Allow", "answered_by": "approver | terminal | timeout",
+                    "approver": "phone", "approver_id": "<machine id>", "at": "RFC3339"},
   "special": false,
   "started_at": "RFC3339", "last_active_at": "RFC3339", "status_since": "RFC3339",
   "running_ms": 0, "waiting_ms": 0,
@@ -121,6 +127,16 @@ messaging grant **and** the topic's share entry includes it (`trusts`: approvers
   stop), and a parent never goes stale while a subagent is running or
   `needs_you`. Ending a parent ends its subagents.
 - `special` sticks to `identity` when `persistent`, else to the session.
+- `recap`: 3–5 short bullets, at most 600 characters. Porter never generates it
+  (no AI in comms): integrations set it with
+  `comms porter event --agent ID --kind update --recap "…"`. Only on machines
+  whose config has `recap = true`; otherwise it is neither stored nor sent.
+- `last_decision`: how the latest permission question tied to this agent
+  resolved, written by `porter ask` / the PermissionRequest hook.
+  `answered_by`: `approver` (an approver answered; `approver` is its alias,
+  `approver_id` its machine id — an app shows "phone" when `approver_id` is its
+  own id), `terminal` (the question was withdrawn and the prompt went to the
+  terminal; no `choice`) or `timeout` (no `choice`).
 - Never sent: prompts, transcripts, full tool input, file contents.
 
 ### STATUS
@@ -147,9 +163,21 @@ Published every 60 s and on change of `agents_running`. `temp_c` and
 ```json
 {"type": "porter.set",    "v": 1, "agent": "<id>", "special": true}
 {"type": "porter.revoke", "v": 1, "trust": "tr_…"}
+{"type": "porter.resign", "v": 1}
 ```
 
 Accepted only from approvers; others are ignored. Effects arrive as topic updates.
+
+`porter.resign`: the sending machine (the verified comms sender, never a body
+field) stops being an approver of this machine. Accepted only while that
+machine is in `approvers`; it removes only that machine id, rewriting just the
+`approvers` line of the config atomically (comments and other keys kept), and
+appends `{"kind":"resign","by":"<machine id>"}` to `audit.jsonl`. Pending
+questions sent to that machine get `porter.cancel` with resolution `resigned`
+(a question left with no recipient is cancelled for its asker too, so a
+blocked hook falls back to the terminal). The reply is a fresh
+`porter.subscribed` (`approver: false`; `trusts` now refused) to the sending
+agent. There is no message that adds an approver.
 
 ## Notifications and questions
 
@@ -169,6 +197,7 @@ Received by the phone's `app` agent:
  "link": "agent:<machine>/<id> | https://…", // optional
  "context": {"machine": "pi", "agent": "pi:joana", "harness": "claude", "session": "<id>", "title": "joana", "project": "brain"},
  "trust": {"receiver": "pi:joana", "sender": "work-mac:secretary"},  // kind=trust only
+ "draft": "On my way, 10 min",              // optional; questions only: a suggested reply
  "sent_at": "RFC3339"}
 ```
 
@@ -182,22 +211,29 @@ Received by the phone's `app` agent:
 - `kind=permission`: a harness permission prompt (`ask` = `["Allow","Deny"]`).
 - `kind=trust`: first order from an untrusted peer agent
   (`ask` = `["Once","This session","Always","Deny"]`).
+- `draft` (`notify --ask … --draft TEXT`, at most 4000 characters): a reply the
+  phone offers for editing; the answer may carry it back as `text`.
 
 Answer, phone → the exact `from` of the notify:
 
 ```json
-{"type": "porter.answer", "v": 1, "id": "ntf_…", "choice": "Allow"}
+{"type": "porter.answer", "v": 1, "id": "ntf_…", "choice": "Allow", "text": "On my way, 10 min"}
 ```
 
+`text` is optional (the possibly edited draft, at most 4000 characters).
+
 Counted only when the answering machine is an approver of the asking machine and
-the question has not expired. Porter forwards a counted answer to the asking agent as
-`porter.answer` (from `<machine>:porter`; `notify --ask` requires a comms
-identity for this). When a question is resolved elsewhere (terminal,
+the question has not expired. Porter forwards a counted answer, `text` included,
+to the asking agent as `porter.answer` (from `<machine>:porter`; `notify --ask`
+requires a comms identity for this). `notify --ask` also waits for the answer and
+prints the choice and, on the next line, the text if any (`--json`:
+`{"choice","text"}`); unanswered (expired or cancelled) it prints the state and
+exits 3. When a question is resolved elsewhere (terminal,
 timeout, another approver), the asker sends to the other recipients (and to the
 asking agent):
 
 ```json
-{"type": "porter.cancel", "v": 1, "id": "ntf_…", "resolution": "terminal | timeout | answered"}
+{"type": "porter.cancel", "v": 1, "id": "ntf_…", "resolution": "terminal | timeout | answered | resigned"}
 ```
 
 ## Encrypted push
@@ -206,6 +242,12 @@ Porter sends a push to subscribers with a token:
 - an agent enters `needs_you`;
 - a `special` agent stops (`done`);
 - every `porter.notify` (to the phone it is addressed to).
+
+A needs_you transition caused by a permission prompt that the PermissionRequest
+hook is asking on the phone gets no agent push: the `kind=permission` notify
+carries the push. (The hook marks that transition in `state.json`; if the
+question cannot be sent, it records the transition again unmarked, so the agent
+push still goes out.)
 
 Data-only, high-priority Expo message to `https://exp.host/--/api/v2/push/send`:
 
@@ -262,11 +304,12 @@ The PermissionRequest hook installed by `comms porter install-hooks`:
 ```
 comms porter setup --approver PEER        write config
 comms porter install-hooks [--uninstall]  Claude + Codex hooks (lifecycle + PermissionRequest)
-comms porter event --agent ID --kind K …  record state (start|prompt|needs|stop|end|update)
+comms porter event --agent ID --kind K …  record state (start|prompt|needs|stop|end|update; --recap TEXT)
 comms porter status [--all]               local agents (--all: every subscribed machine, from cache)
 comms porter get MACHINE TOPIC            cached topic value from a peer
 comms porter hook --harness claude|codex  the installed hook (stdin JSON)
-comms porter notify --to PEER …           send a notification (--from ALIAS, --expires D)
+comms porter notify --to PEER …           send a notification (--from ALIAS, --expires D,
+                                          --ask "A,B" waits for the answer, --draft TEXT)
 comms porter ask "TEXT" [--kind permission]  blocking question → prints allow|deny|timeout, exit 0|2|3
 comms porter ask-trust --sender MACHINE_ID:AGENT_ID [--from ALIAS]
                                           kind=trust question → once|session|always|deny|timeout, exit 0|0|0|2|3
@@ -291,3 +334,10 @@ pastes each machine's bundle. On the machine: `comms pair --stdin` (tolerates
 surrounding text, code fences, a BOM, wrapped or URL-safe base64) then
 `comms grant <phone>`. The phone also needs the broker URL and the broker service
 key (pasted once, kept in secure storage).
+
+Before trusting a pasted bundle, compare key fingerprints out of band: the first
+32 hex characters of SHA-256 over the raw 32-byte X25519 public key, in groups
+of 4 separated by spaces (`630d cd29 66c4 3366 9112 5448 bbb2 5b4f`), the same
+as the app shows. `comms export` prints it (and adds a `fingerprint` field to
+the bundle, which `comms pair` ignores), `comms peers` lists it per pinned peer,
+and `comms fingerprint [PEER]` prints one (this machine when omitted).

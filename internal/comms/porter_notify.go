@@ -23,6 +23,7 @@ type question struct {
 	expires  time.Time
 	state    string // pending | answered | timeout | cancelled
 	choice   string
+	text     string // the approver's (possibly edited) draft
 	by       string
 	trust    *porter.Trust
 	done     chan struct{}
@@ -40,6 +41,7 @@ type PorterNotifyRequest struct {
 	Priority  string   `json:"priority,omitempty"`
 	Ask       []string `json:"ask,omitempty"`
 	Link      string   `json:"link,omitempty"`
+	Draft     string   `json:"draft,omitempty"`
 	ExpiresMS int64    `json:"expires_ms,omitempty"`
 }
 
@@ -59,7 +61,9 @@ type PorterQuestion struct {
 	ID        string    `json:"id"`
 	State     string    `json:"state"`
 	Choice    string    `json:"choice,omitempty"`
+	Text      string    `json:"text,omitempty"`
 	By        string    `json:"by,omitempty"`
+	ByAlias   string    `json:"by_alias,omitempty"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
@@ -198,7 +202,7 @@ func (b *porterBridge) notify(ctx context.Context, q PorterNotifyRequest) (map[s
 		return nil, e
 	}
 	nt := porter.Notify{Type: porter.TypeNotify, V: porter.WireVersion, ID: porter.NewID("ntf_"), Kind: porter.NotifyMessage,
-		Title: q.Title, Body: q.Body, Reason: q.Reason, Priority: q.Priority, Ask: q.Ask, Link: q.Link, Context: c, SentAt: time.Now().UTC().Truncate(time.Second)}
+		Title: q.Title, Body: q.Body, Reason: q.Reason, Priority: q.Priority, Ask: q.Ask, Link: q.Link, Draft: q.Draft, Context: c, SentAt: time.Now().UTC().Truncate(time.Second)}
 	if e = porter.ValidateNotify(&nt); e != nil {
 		return nil, problem(400, "bad_notify", e.Error())
 	}
@@ -343,7 +347,7 @@ func (b *porterBridge) pendingTrust(ctx context.Context, receiverID, sender stri
 	return porter.Trust{Receiver: b.machine() + ":" + r.Alias, ReceiverID: r.ID, Sender: p.Alias + ":" + name, SenderID: machine + ":" + agent}, nil
 }
 
-func (b *porterBridge) answer(peer, id, choice string) {
+func (b *porterBridge) answer(peer, id, choice, text string) {
 	b.mu.Lock()
 	q := b.questions[id]
 	b.mu.Unlock()
@@ -351,7 +355,48 @@ func (b *porterBridge) answer(peer, id, choice string) {
 		log.Printf("porter: ignored answer (unknown, expired, invalid or not from an approver)")
 		return
 	}
+	b.mu.Lock()
+	if q.state == "pending" {
+		q.text = text
+	}
+	b.mu.Unlock()
 	b.resolve(id, "answered", choice, peer, porter.ResolvedAnswered)
+}
+
+// cancelQuestionsTo withdraws pending questions from peer's recipients (it
+// resigned as an approver, so its answers no longer count). A question left
+// with no recipient is cancelled for its asker too.
+func (b *porterBridge) cancelQuestionsTo(peer string) {
+	type cancel struct{ to, id string }
+	var cancels []cancel
+	var orphaned []string
+	b.mu.Lock()
+	for id, q := range b.questions {
+		if q.state != "pending" {
+			continue
+		}
+		kept := q.targets[:0:0]
+		for _, t := range q.targets {
+			if strings.HasPrefix(t, peer+":") {
+				cancels = append(cancels, cancel{t, id})
+			} else {
+				kept = append(kept, t)
+			}
+		}
+		if len(kept) != len(q.targets) {
+			q.targets = kept
+			if len(kept) == 0 {
+				orphaned = append(orphaned, id)
+			}
+		}
+	}
+	b.mu.Unlock()
+	for _, c := range cancels {
+		b.send(c.to, porter.Cancel{Type: porter.TypeCancel, V: porter.WireVersion, ID: c.id, Resolution: porter.ResolvedResigned})
+	}
+	for _, id := range orphaned {
+		b.resolve(id, "cancelled", "", "", porter.ResolvedResigned)
+	}
 }
 
 // resolve settles a pending question once and tells everyone else.
@@ -385,7 +430,10 @@ func (b *porterBridge) resolve(id, state, choice, by, resolution string) {
 	}
 	if q.asker != "" {
 		if state == "answered" {
-			b.send(q.asker, porter.Answer{Type: porter.TypeAnswer, V: porter.WireVersion, ID: id, Choice: choice})
+			b.mu.Lock()
+			text := q.text
+			b.mu.Unlock()
+			b.send(q.asker, porter.Answer{Type: porter.TypeAnswer, V: porter.WireVersion, ID: id, Choice: choice, Text: text})
 		} else {
 			b.send(q.asker, porter.Cancel{Type: porter.TypeCancel, V: porter.WireVersion, ID: id, Resolution: resolution})
 		}
@@ -430,6 +478,12 @@ func (b *porterBridge) wait(ctx context.Context, id string, d time.Duration) (Po
 		b.resolve(id, "timeout", "", "", porter.ResolvedTimeout)
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	return PorterQuestion{ID: id, State: q.state, Choice: q.choice, By: q.by, ExpiresAt: q.expires}, nil
+	out := PorterQuestion{ID: id, State: q.state, Choice: q.choice, Text: q.text, By: q.by, ExpiresAt: q.expires}
+	b.mu.Unlock()
+	if out.By != "" {
+		if p, e := b.n.Store.Peer(out.By); e == nil {
+			out.ByAlias = p.Alias
+		}
+	}
+	return out, nil
 }

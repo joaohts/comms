@@ -241,7 +241,9 @@ func (b *porterBridge) handle(m Message) {
 			return ok, nil
 		})
 	case porter.TypeAnswer:
-		b.answer(peer, c.ID, c.Choice)
+		b.answer(peer, c.ID, c.Choice, c.Text)
+	case porter.TypeResign:
+		b.resign(peer, m.SenderAgent)
 	case porter.TypeSubscribed:
 		b.mu.Lock()
 		b.peerOK[peer] = true
@@ -272,19 +274,53 @@ func (b *porterBridge) subscribe(peer, agent string, c porter.Inbound) {
 	if c.Type != porter.TypeSubscribe {
 		return
 	}
+	reply := b.subscribed(cfg, peer, c.Topics, sub.Push != nil)
+	b.send(sub.Peer+":"+sub.Agent, reply)
+	for _, t := range reply.Topics {
+		b.snapshot(sub, t)
+	}
+}
+
+// subscribed is the porter.subscribed reply for peer asking for topics.
+func (b *porterBridge) subscribed(cfg porter.Config, peer string, topics []string, push bool) porter.Subscribed {
 	reply := porter.Subscribed{Type: porter.TypeSubscribed, V: porter.WireVersion, Machine: b.machine(), Topics: []string{}, Refused: []string{},
-		Approver: cfg.IsApprover(peer), Push: sub.Push != nil, Version: Version}
-	for _, t := range c.Topics {
+		Approver: cfg.IsApprover(peer), Push: push, Version: Version}
+	for _, t := range topics {
 		if slices.Contains(porter.Topics, t) && cfg.Shares(t, peer) {
 			reply.Topics = append(reply.Topics, t)
 		} else {
 			reply.Refused = append(reply.Refused, t)
 		}
 	}
-	b.send(sub.Peer+":"+sub.Agent, reply)
-	for _, t := range reply.Topics {
-		b.snapshot(sub, t)
+	return reply
+}
+
+// resign removes an approver at its own request. Only a current approver may
+// resign, only itself; no message can ever add an approver. Its pending
+// questions are cancelled, and it gets a fresh porter.subscribed.
+func (b *porterBridge) resign(peer, agent string) {
+	if !b.config().IsApprover(peer) {
+		log.Printf("porter: ignored porter.resign from non-approver")
+		return
 	}
+	removed, e := porter.RemoveApprover(b.cfgPath, peer)
+	if e != nil {
+		log.Printf("porter resign: %v", e)
+		return
+	}
+	if !removed {
+		return
+	}
+	porter.AppendAudit(filepath.Join(b.dir, "audit.jsonl"), porter.AuditRecord{Kind: "resign", By: peer, Result: "resigned"})
+	b.cancelQuestionsTo(peer)
+	b.mu.Lock()
+	sub, ok := b.subs[peer]
+	b.mu.Unlock()
+	topics := []string{}
+	if ok {
+		topics = sub.Topics
+	}
+	b.send(peer+":"+agent, b.subscribed(b.config(), peer, topics, ok && sub.Push != nil))
 }
 
 // current returns subscribers that still hold a messaging grant, forgetting
@@ -351,7 +387,7 @@ func (b *porterBridge) snapshot(s porter.Subscriber, topic string) {
 			log.Printf("porter: %v", e)
 			return
 		}
-		b.send(to, porter.NewSnapshot(b.machine(), topic, porter.AgentItems(st), MaxBody-1024))
+		b.send(to, porter.NewSnapshot(b.machine(), topic, porter.AgentItems(st, b.config().Recap), MaxBody-1024))
 	case porter.TopicStatus:
 		b.send(to, porter.NewValueSnapshot(b.machine(), topic, b.status()))
 	case porter.TopicTrusts:
@@ -423,10 +459,12 @@ func (b *porterBridge) poll() {
 	b.last = st.Agents
 	changedAgents, removed := porter.Diff(prev, st.Agents)
 	machine := b.machine()
+	recap := b.config().Recap
 	for _, s := range b.receiving(porter.TopicAgents) {
 		for _, a := range changedAgents {
-			b.send(s.Peer+":"+s.Agent, porter.NewUpdate(machine, porter.TopicAgents, a.View()))
-			if s.Push != nil && porter.PushWanted(prev[a.ID], a) {
+			b.send(s.Peer+":"+s.Agent, porter.NewUpdate(machine, porter.TopicAgents, a.Published(recap)))
+			// A permission question on its way to the phone carries the push.
+			if s.Push != nil && porter.PushWanted(prev[a.ID], a) && !st.PhoneAsked(a) {
 				b.pushTo(s, porter.NoticeFor(machine, a.View()), nil)
 			}
 		}

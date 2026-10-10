@@ -35,6 +35,7 @@ type Config struct {
 	AskTimeout    time.Duration
 	IdleThreshold time.Duration
 	Share         map[string][]string
+	Recap         bool // publish agent recaps set by integrations; off: never stored or sent
 	Exists        bool
 }
 
@@ -120,6 +121,14 @@ func parseConfig(src string, c *Config) error {
 			return fmt.Errorf("line %d: expected key = value", n+1)
 		}
 		key = strings.Trim(strings.TrimSpace(key), `"`)
+		if section == "" && key == "recap" {
+			v, err := strconv.ParseBool(strings.Trim(strings.TrimSpace(raw), `"`))
+			if err != nil {
+				return fmt.Errorf("line %d: recap must be true or false", n+1)
+			}
+			c.Recap = v
+			continue
+		}
 		list, str, isList, err := parseValue(strings.TrimSpace(raw))
 		if err != nil {
 			return fmt.Errorf("line %d: %v", n+1, err)
@@ -216,6 +225,9 @@ func (c Config) Encode() string {
 	fmt.Fprintf(&b, "approvals = %q\n", c.Approvals)
 	fmt.Fprintf(&b, "ask_timeout = %q\n", shortDuration(c.AskTimeout))
 	fmt.Fprintf(&b, "idle_threshold = %q\n", shortDuration(c.IdleThreshold))
+	if c.Recap {
+		b.WriteString("recap = true\n")
+	}
 	b.WriteString("\n[share]\n")
 	keys := make([]string, 0, len(c.Share))
 	for k := range c.Share {
@@ -253,4 +265,70 @@ func SaveConfig(path string, c Config) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// RemoveApprover drops machine from the approvers of the config at path,
+// rewriting only that line (comments, unknown keys and layout are kept) and
+// replacing the file atomically. It reports whether machine was an approver.
+// Nothing in porter ever adds an approver from a message; that is local setup.
+func RemoveApprover(path, machine string) (bool, error) {
+	l, err := lockFile(path)
+	if err != nil {
+		return false, err
+	}
+	defer l.Close()
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(string(b), "\n")
+	removed := false
+	section := ""
+	for i, line := range lines {
+		code := stripComment(line)
+		trimmed := strings.TrimSpace(code)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			section = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			continue
+		}
+		key, raw, ok := strings.Cut(trimmed, "=")
+		if !ok || section != "" || strings.Trim(strings.TrimSpace(key), `"`) != "approvers" {
+			continue
+		}
+		list, str, isList, err := parseValue(strings.TrimSpace(raw))
+		if err != nil {
+			return false, fmt.Errorf("%s: approvers: %v", path, err)
+		}
+		if !isList {
+			list = []string{str}
+		}
+		kept := []string{}
+		for _, v := range list {
+			if v == machine {
+				removed = true
+				continue
+			}
+			kept = append(kept, strconv.Quote(v))
+		}
+		indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		lines[i] = indent + "approvers = [" + strings.Join(kept, ", ") + "]"
+		if comment := line[len(code):]; comment != "" {
+			lines[i] += " " + comment
+		}
+	}
+	if !removed {
+		return false, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")), info.Mode().Perm()); err != nil {
+		return false, err
+	}
+	return true, os.Rename(tmp, path)
 }

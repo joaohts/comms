@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -668,4 +669,153 @@ func TestPorterLinksIdentityAndCachesPeers(t *testing.T) {
 		json.Unmarshal(e.Items[0], &a)
 		return a.ID == "sub-1" && a.Status == porter.StatusDone && a.Parent == "claude-sess-1"
 	})
+}
+
+func TestPorterResignRemovesOnlyTheSenderAndNeverAdds(t *testing.T) {
+	f := newPorterFixture(t)
+	mac := f.mac
+	phoneID, piID := f.phone.node.Store.Identity.MachineID, f.pi.node.Store.Identity.MachineID
+	src := "# porter on mac\napprovers = [\"" + phoneID + "\", \"m_tablet\"]\napprovals = \"phone\"\nfuture_key = \"kept\"\n\n[share]\nagents = \"*\"\nstatus = \"*\"\n"
+	if err := os.WriteFile(mac.config, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := func() string { b, _ := os.ReadFile(mac.config); return string(b) }
+
+	// A non-approver can neither resign anyone nor add itself, whatever it sends.
+	piApp := f.pi.open(t, "operator", "global", false)
+	for _, body := range []string{`{"type":"porter.resign","v":1}`, `{"type":"porter.approve","v":1}`,
+		`{"type":"porter.subscribe","v":1,"topics":["trusts"],"approver":true,"approvers":["` + piID + `"]}`} {
+		m := f.pi.send(t, piApp.Session.ID, "mac:"+PorterAlias, body, NewID("ctl_"))
+		waitHandedOff(t, f.pi.nodeIntegrationFixture, m.ID)
+	}
+	if config() != src {
+		t.Fatalf("non-approver changed the config:\n%s", config())
+	}
+
+	f.control(t, "mac", `{"type":"porter.subscribe","v":1,"topics":["agents","trusts"]}`)
+	var sub porter.Subscribed
+	f.expect(t, porter.TypeSubscribed, "", &sub)
+	if !sub.Approver {
+		t.Fatalf("phone is an approver: %+v", sub)
+	}
+	f.expect(t, porter.TypeSnapshot, porter.TopicAgents, nil)
+	f.expect(t, porter.TypeSnapshot, porter.TopicTrusts, nil)
+	var q PorterQuestion
+	mac.call(t, "POST", "/v1/porter/questions", PorterQuestionRequest{Kind: "permission", Text: "Bash: ls", TimeoutMS: 20000}, 202, &q)
+	f.expect(t, porter.TypeNotify, "", nil)
+
+	// The approver resigns: removed from the config (nothing else touched),
+	// audited, its pending question cancelled, a fresh subscribed sent.
+	f.control(t, "mac", `{"type":"porter.resign","v":1}`)
+	var cancel porter.Cancel
+	f.expect(t, porter.TypeCancel, "", &cancel)
+	if cancel.ID != q.ID || cancel.Resolution != porter.ResolvedResigned {
+		t.Fatalf("cancel: %+v", cancel)
+	}
+	sub = porter.Subscribed{}
+	f.expect(t, porter.TypeSubscribed, "", &sub)
+	if sub.Approver || strings.Join(sub.Topics, ",") != "agents" || strings.Join(sub.Refused, ",") != "trusts" {
+		t.Fatalf("subscribed after resign: %+v", sub)
+	}
+	if want := strings.Replace(src, `"`+phoneID+`", `, "", 1); config() != want {
+		t.Fatalf("config after resign:\n%s\nwant:\n%s", config(), want)
+	}
+	var done PorterQuestion
+	mac.call(t, "GET", "/v1/porter/questions/"+q.ID, nil, 200, &done)
+	if done.State != "cancelled" {
+		t.Fatalf("question after resign: %+v", done)
+	}
+	audit, _ := os.ReadFile(filepath.Join(mac.cfg.DataDir, "porter", "audit.jsonl"))
+	if !strings.Contains(string(audit), `"kind":"resign"`) || !strings.Contains(string(audit), phoneID) {
+		t.Fatalf("audit: %s", audit)
+	}
+	// No longer an approver: control and a second resign are ignored.
+	after := config()
+	f.control(t, "mac", `{"type":"porter.resign","v":1}`)
+	f.control(t, "mac", `{"type":"porter.revoke","v":1,"trust":"tr_x"}`)
+	f.recv.empty(t)
+	if config() != after {
+		t.Fatal("config changed after the approver left")
+	}
+}
+
+func TestPorterNotifyDraftAndAnswerText(t *testing.T) {
+	f := newPorterFixture(t)
+	mac := f.mac
+	mcp := mac.open(t, "mcp", "local", true)
+	agentRecv := mac.receiver(t, mcp.Session)
+	mac.call(t, "POST", "/v1/porter/notify", PorterNotifyRequest{SessionID: mcp.Session.ID, To: "phone", Title: "Reply", Reason: "r", Draft: "no ask"}, 400, nil)
+	var out map[string]string
+	mac.call(t, "POST", "/v1/porter/notify", PorterNotifyRequest{SessionID: mcp.Session.ID, To: "phone", Title: "Reply to Ana?", Reason: "she asked", Ask: []string{"Send", "Skip"}, Draft: "On my way"}, 202, &out)
+	var nt porter.Notify
+	f.expect(t, porter.TypeNotify, "", &nt)
+	if nt.ID != out["id"] || nt.Draft != "On my way" {
+		t.Fatalf("notify: %+v", nt)
+	}
+	f.control(t, "mac", `{"type":"porter.answer","v":1,"id":"`+nt.ID+`","choice":"Send","text":"On my way, 10 min"}`)
+	got := agentRecv.next(t)
+	agentRecv.handoff(t, got, "handed_off")
+	var ans porter.Answer
+	json.Unmarshal([]byte(got.Body), &ans)
+	if ans.ID != nt.ID || ans.Choice != "Send" || ans.Text != "On my way, 10 min" {
+		t.Fatalf("forwarded answer: %s", got.Body)
+	}
+	var q PorterQuestion
+	mac.call(t, "GET", "/v1/porter/questions/"+nt.ID, nil, 200, &q)
+	if q.State != "answered" || q.Text != "On my way, 10 min" || q.By != f.phone.node.Store.Identity.MachineID || q.ByAlias != "phone" {
+		t.Fatalf("question: %+v", q)
+	}
+}
+
+func TestPorterRecapOptInAndPermissionPushDedupe(t *testing.T) {
+	f := newPorterFixture(t)
+	mac := f.mac
+	f.control(t, "mac", `{"type":"porter.subscribe","v":1,"topics":["agents"],"push":{"provider":"expo","token":"`+testPushToken+`"}}`)
+	f.expect(t, porter.TypeSubscribed, "", nil)
+	f.expect(t, porter.TypeSnapshot, porter.TopicAgents, nil)
+	var up struct {
+		Item porter.Agent `json:"item"`
+	}
+	// Recap is off by default: never sent, even if present in state.
+	mac.event(t, porter.Event{Agent: "c1", Kind: porter.KindUpdate, Recap: "- did a\n- did b"})
+	f.expect(t, porter.TypeUpdate, porter.TopicAgents, &up)
+	if up.Item.ID != "c1" || up.Item.Recap != "" {
+		t.Fatalf("recap sent while off: %+v", up.Item)
+	}
+	c := porter.DefaultConfig()
+	c.Approvers, c.Recap = []string{f.phone.node.Store.Identity.MachineID}, true
+	porter.SaveConfig(mac.config, c)
+	mac.event(t, porter.Event{Agent: "c1", Kind: porter.KindUpdate, Summary: "working"})
+	f.expect(t, porter.TypeUpdate, porter.TopicAgents, &up)
+	if up.Item.Recap != "- did a\n- did b" {
+		t.Fatalf("recap on: %+v", up.Item)
+	}
+
+	// A needs_you transition being asked on the phone: the permission notify
+	// carries the push, the agent-status push is skipped.
+	if err := mac.state.Update(func(s *porter.State) error {
+		a, err := s.Apply(porter.Event{Agent: "c1", Kind: porter.KindNeeds, Needs: &porter.Needs{Kind: "permission", Text: "Bash: ls"}})
+		s.MarkPhoneAsk(a)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.expect(t, porter.TypeUpdate, porter.TopicAgents, &up)
+	if up.Item.Status != porter.StatusNeedsYou {
+		t.Fatalf("needs_you: %+v", up.Item)
+	}
+	var q PorterQuestion
+	mac.call(t, "POST", "/v1/porter/questions", PorterQuestionRequest{Kind: "permission", Text: "Bash: ls", Agent: "c1", TimeoutMS: 20000}, 202, &q)
+	f.expect(t, porter.TypeNotify, "", nil)
+	nodeIntegrationEventually(t, "notify push", func() bool { return mac.push.count() >= 1 })
+	if v := openBox(t, mac.push.call(0), mac.node.Store.Identity, f.phone.node.Store.Identity); v["kind"] != "notify" {
+		t.Fatalf("first push is not the notify: %+v", v)
+	}
+	// An unmarked needs_you still gets the agent push.
+	mac.event(t, porter.Event{Agent: "c2", Kind: porter.KindNeeds, Needs: &porter.Needs{Kind: "input", Text: "which?"}})
+	f.expect(t, porter.TypeUpdate, porter.TopicAgents, nil)
+	nodeIntegrationEventually(t, "agent push", func() bool { return mac.push.count() == 2 })
+	if v := openBox(t, mac.push.call(1), mac.node.Store.Identity, f.phone.node.Store.Identity); v["kind"] != "agent" || v["agent"] != "c2" {
+		t.Fatalf("agent push: %+v", v)
+	}
 }

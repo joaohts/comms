@@ -280,6 +280,10 @@ func TestPorterNotifyFromAndToAlias(t *testing.T) {
 		if bindings(w, r) {
 			return
 		}
+		if r.Method == "GET" && r.URL.Path == "/v1/porter/questions/ntf_1" {
+			json.NewEncoder(w).Encode(comms.PorterQuestion{ID: "ntf_1", State: "answered", Choice: "Roll back", Text: got.Draft + " (edited)"})
+			return
+		}
 		json.NewDecoder(r.Body).Decode(&got)
 		w.WriteHeader(202)
 		io.WriteString(w, `{"id":"ntf_1","to":"m_phone:a_app"}`)
@@ -291,8 +295,150 @@ func TestPorterNotifyFromAndToAlias(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.To != "phone" || got.SessionID != "s_1" || got.Reason != "you asked" || len(got.Ask) != 2 || got.Priority != "high" || !strings.Contains(out.String(), "ntf_1") {
-		t.Fatalf("request: %+v", got)
+	if got.To != "phone" || got.SessionID != "s_1" || got.Reason != "you asked" || len(got.Ask) != 2 || got.Priority != "high" || out.String() != "Roll back\n (edited)\n" {
+		t.Fatalf("request: %+v out=%q", got, out)
+	}
+	// --draft goes with --ask; the answer's text is printed after the choice.
+	if err := a.run(context.Background(), []string{"--data-dir", dataDir, "porter", "notify", "--to", "phone", "--title", "Reply?", "--reason", "r", "--draft", "hi"}); err == nil {
+		t.Fatal("--draft without --ask accepted")
+	}
+	out.Reset()
+	err = a.run(context.Background(), []string{"--json", "--data-dir", dataDir, "porter", "notify", "--to", "phone", "--title", "Reply?", "--reason", "r", "--ask", "Send,Skip", "--draft", "On my way"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res map[string]string
+	if json.Unmarshal(out.Bytes(), &res) != nil || got.Draft != "On my way" || res["choice"] != "Roll back" || res["text"] != "On my way (edited)" {
+		t.Fatalf("draft: %+v %q", got, out)
+	}
+	// Without --ask notify returns at once.
+	out.Reset()
+	if err := a.run(context.Background(), []string{"--data-dir", dataDir, "porter", "notify", "--to", "phone", "--title", "FYI", "--reason", "r"}); err != nil || !strings.Contains(out.String(), "ntf_1") {
+		t.Fatalf("plain notify: %v %q", err, out)
+	}
+}
+
+func TestPorterEventRecapIsOptIn(t *testing.T) {
+	dataDir, cfg := porterTestEnv(t)
+	a, _ := testApp(t, http.NotFoundHandler())
+	event := func(recap string) error {
+		return a.run(context.Background(), []string{"--data-dir", dataDir, "porter", "event", "--agent", "c1", "--kind", "update", "--recap", recap})
+	}
+	writeConfig(t, cfg, nil) // recap off by default
+	if err := event("- did A\n- did B"); err != nil {
+		t.Fatal(err)
+	}
+	if r := loadAgents(t, dataDir)["c1"].Recap; r != "" {
+		t.Fatalf("recap stored while off: %q", r)
+	}
+	writeConfig(t, cfg, func(c *porter.Config) { c.Recap = true })
+	if err := event("- did A\n- did B"); err != nil {
+		t.Fatal(err)
+	}
+	if r := loadAgents(t, dataDir)["c1"].Recap; r != "- did A\n- did B" {
+		t.Fatalf("recap: %q", r)
+	}
+	if err := event(strings.Repeat("x", porter.MaxRecap+1)); err == nil {
+		t.Fatal("over-long recap accepted")
+	}
+}
+
+func TestHookMarksPhoneAskAndRecordsDecision(t *testing.T) {
+	dataDir, cfg := porterTestEnv(t)
+	writeConfig(t, cfg, func(c *porter.Config) { c.Approvals = porter.ApprovalsPhone })
+	state := porter.Store{Path: filepath.Join(dataDir, "porter", "state.json")}
+	in := `{"session_id":"c1","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ls"}}`
+	var asked []comms.PorterQuestionRequest
+	// The question is pending while the hook waits: the transition is marked.
+	marked := false
+	a, _ := testApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			st, _ := state.Load()
+			marked = st.PhoneAsked(*st.Agents["c1"])
+		}
+		fakeQuestions(t, comms.PorterQuestion{ID: "ntf_1", State: "answered", Choice: "Allow", By: "m_phone", ByAlias: "phone"}, &asked).ServeHTTP(w, r)
+	}))
+	if out := runHook(t, a, dataDir, "claude", in); !strings.Contains(out, `"behavior":"allow"`) || !marked {
+		t.Fatalf("phone ask: %q marked=%v", out, marked)
+	}
+	d := loadAgents(t, dataDir)["c1"].LastDecision
+	if d == nil || d.Choice != "Allow" || d.AnsweredBy != porter.AnsweredByApprover || d.Approver != "phone" || d.ApproverID != "m_phone" || d.At.IsZero() {
+		t.Fatalf("decision: %+v", d)
+	}
+	a2, _ := testApp(t, fakeQuestions(t, comms.PorterQuestion{ID: "ntf_1", State: "timeout"}, &asked))
+	runHook(t, a2, dataDir, "claude", in)
+	if d := loadAgents(t, dataDir)["c1"].LastDecision; d.AnsweredBy != porter.AnsweredByTimeout || d.Choice != "" {
+		t.Fatalf("timeout decision: %+v", d)
+	}
+	a3, _ := testApp(t, fakeQuestions(t, comms.PorterQuestion{ID: "ntf_1", State: "cancelled"}, &asked))
+	runHook(t, a3, dataDir, "claude", in)
+	if d := loadAgents(t, dataDir)["c1"].LastDecision; d.AnsweredBy != porter.AnsweredByTerminal {
+		t.Fatalf("terminal decision: %+v", d)
+	}
+	// No question could be sent: the needs_you transition is unmarked, so the
+	// agent-status push still goes out.
+	a4, _ := testApp(t, http.NotFoundHandler())
+	runHook(t, a4, dataDir, "claude", in)
+	st, _ := state.Load()
+	if ag := st.Agents["c1"]; ag.Status != porter.StatusNeedsYou || st.PhoneAsked(*ag) {
+		t.Fatalf("unsent question left the push suppressed: %+v %v", ag, st.PhoneAsks)
+	}
+	// Terminal approvals never mark.
+	writeConfig(t, cfg, func(c *porter.Config) { c.Approvals = porter.ApprovalsTerminal })
+	runHook(t, a4, dataDir, "claude", in)
+	st, _ = state.Load()
+	if st.PhoneAsked(*st.Agents["c1"]) {
+		t.Fatal("terminal approval marked a phone ask")
+	}
+}
+
+func TestFingerprintExportPeersAndPair(t *testing.T) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	// sha256(00 01 .. 1f), first 32 hex chars, groups of 4 (as the app shows it).
+	const want = "630d cd29 66c4 3366 9112 5448 bbb2 5b4f"
+	if got := comms.Fingerprint(key); got != want {
+		t.Fatalf("fingerprint %q", got)
+	}
+	a, out := testApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/status":
+			json.NewEncoder(w).Encode(map[string]any{"machine_id": "m_self", "public_key": key, "name": "mac"})
+		case "/v1/peers":
+			json.NewEncoder(w).Encode([]comms.Peer{{MachineID: "m_pi", Alias: "pi", PublicKey: key}})
+		}
+	}))
+	run := func(args ...string) string {
+		t.Helper()
+		out.Reset()
+		if err := a.run(context.Background(), args); err != nil {
+			t.Fatal(err)
+		}
+		return out.String()
+	}
+	if got := run("fingerprint"); got != want+"\n" {
+		t.Fatalf("self: %q", got)
+	}
+	if got := run("fingerprint", "pi"); got != want+"\n" {
+		t.Fatalf("peer: %q", got)
+	}
+	if got := run("peers"); !strings.Contains(got, want) {
+		t.Fatalf("peers: %q", got)
+	}
+	human := run("export")
+	if !strings.Contains(human, "fingerprint: "+want) {
+		t.Fatalf("export: %q", human)
+	}
+	var bundle map[string]any
+	if json.Unmarshal([]byte(run("--json", "export")), &bundle) != nil || bundle["fingerprint"] != want || bundle["machine_id"] != "m_self" {
+		t.Fatalf("export json: %v", bundle)
+	}
+	// pair reads the human export as is and ignores the fingerprint.
+	p, err := parseBundle([]byte(human))
+	if err != nil || p.MachineID != "m_self" || p.Alias != "mac" || string(p.PublicKey) != string(key) {
+		t.Fatalf("pair of export: %+v %v", p, err)
 	}
 }
 

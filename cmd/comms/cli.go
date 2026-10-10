@@ -136,6 +136,8 @@ func (a *app) run(ctx context.Context, args []string) error {
 		return a.pair(ctx, args)
 	case "export":
 		return a.exportIdentity(ctx, args)
+	case "fingerprint":
+		return a.fingerprint(ctx, args)
 	case "grant", "ungrant":
 		return a.grant(ctx, args, args0 == "grant")
 	case "broker":
@@ -277,9 +279,9 @@ func (a *app) list(ctx context.Context, path string, args []string, kind string)
 		if err := json.Unmarshal(out, &items); err != nil {
 			return err
 		}
-		fmt.Fprintln(w, "ALIAS\tMACHINE ID\tPINNED PUBLIC KEY")
+		fmt.Fprintln(w, "ALIAS\tMACHINE ID\tFINGERPRINT\tPINNED PUBLIC KEY")
 		for _, p := range items {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", p.Alias, p.MachineID, base64.StdEncoding.EncodeToString(p.PublicKey))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.Alias, p.MachineID, comms.Fingerprint(p.PublicKey), base64.StdEncoding.EncodeToString(p.PublicKey))
 		}
 	case "grants":
 		var items []comms.Grant
@@ -488,7 +490,59 @@ func (a *app) exportIdentity(ctx context.Context, args []string) error {
 	if *alias == "" {
 		*alias = status.Name
 	}
-	return a.output(comms.Peer{MachineID: status.MachineID, PublicKey: status.PublicKey, Alias: *alias})
+	fp := comms.Fingerprint(status.PublicKey)
+	// The bundle is what comms pair (and the phone) reads; pair ignores the
+	// fingerprint, which is for comparing keys out of band.
+	bundle := struct {
+		comms.Peer
+		Fingerprint string `json:"fingerprint"`
+	}{comms.Peer{MachineID: status.MachineID, PublicKey: status.PublicKey, Alias: *alias}, fp}
+	if err := a.output(bundle); err != nil || a.jsonOutput {
+		return err
+	}
+	_, err := fmt.Fprintf(a.out, "fingerprint: %s\n", fp)
+	return err
+}
+
+// fingerprint prints this machine's key fingerprint, or a pinned peer's.
+func (a *app) fingerprint(ctx context.Context, args []string) error {
+	if len(args) > 1 {
+		return usageError("usage: comms fingerprint [PEER]")
+	}
+	var p comms.Peer
+	if len(args) == 0 {
+		var status struct {
+			MachineID string `json:"machine_id"`
+			PublicKey []byte `json:"public_key"`
+			Name      string `json:"name"`
+		}
+		if err := a.c.Do(ctx, "GET", "/v1/status", nil, &status); err != nil {
+			return err
+		}
+		p = comms.Peer{MachineID: status.MachineID, Alias: status.Name, PublicKey: status.PublicKey}
+	} else {
+		var peers []comms.Peer
+		if err := a.c.Do(ctx, "GET", "/v1/peers", nil, &peers); err != nil {
+			return err
+		}
+		for _, v := range peers {
+			if v.Alias == args[0] || v.MachineID == args[0] {
+				p = v
+			}
+		}
+		if p.MachineID == "" {
+			return &client.Error{Code: "unknown_peer", Message: "peer " + args[0] + " is not paired"}
+		}
+	}
+	if len(p.PublicKey) != 32 {
+		return &client.Error{Code: "no_key", Message: "no 32-byte public key for " + p.MachineID}
+	}
+	fp := comms.Fingerprint(p.PublicKey)
+	if a.jsonOutput {
+		return a.output(map[string]string{"machine_id": p.MachineID, "alias": p.Alias, "fingerprint": fp})
+	}
+	_, err := fmt.Fprintln(a.out, fp)
+	return err
 }
 
 func (a *app) pair(ctx context.Context, args []string) error {
@@ -877,6 +931,7 @@ func (a *app) help() error {
   events                              Observe state without consuming mail
   status [MESSAGE_ID] | stats          Node/message state and local statistics
   export [--alias NAME]                Export public identity for pairing
+  fingerprint [PEER]                  Key fingerprint to compare out of band (self by default)
   pair --file FILE [--alias NAME]       Import an out-of-band verified identity
   peers | grants                      List pinned peers and permissions
   grant PEER [--read-history]          Grant discovery/messaging/history
@@ -890,8 +945,8 @@ func (a *app) help() error {
   porter event --agent ID --kind KIND  Record agent state (start|prompt|needs|stop|end|update)
   porter status [--all]               Local agents (--all: cached peer machines too)
   porter get MACHINE TOPIC            Cached topic value from a peer (agents|status|trusts)
-  porter notify --to PEER --title T --body B --reason R [--ask "A,B"] [--from ALIAS]
-                                      Notify a phone (encrypted push)
+  porter notify --to PEER --title T --body B --reason R [--ask "A,B" [--draft TEXT]] [--from ALIAS]
+                                      Notify a phone (encrypted push); --ask waits for the answer
   porter ask "TEXT"                   Ask the approvers: allow|deny|timeout (exit 0|2|3)
   porter ask-trust --sender ID        Ask whether to trust a peer agent's orders
   porter trust [list|revoke ID]       Local trust store

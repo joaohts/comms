@@ -196,3 +196,37 @@ func TestSweepKeepsWorkingSubagentsAndTheirParents(t *testing.T) {
 		}
 	}
 }
+
+func TestPhoneAskMarksOneTransition(t *testing.T) {
+	s := NewState()
+	a := mustApply(t, s, Event{Agent: "c1", Kind: KindNeeds, At: at(1), Needs: &Needs{Kind: "permission"}})
+	s.MarkPhoneAsk(a)
+	if !s.PhoneAsked(*a) {
+		t.Fatal("not marked")
+	}
+	// The next needs_you transition (or any status change) is a new one.
+	a = mustApply(t, s, Event{Agent: "c1", Kind: KindNeeds, At: at(2)})
+	if s.PhoneAsked(*a) || len(s.PhoneAsks) != 0 {
+		t.Fatalf("mark survived a new transition: %v", s.PhoneAsks)
+	}
+	s.MarkPhoneAsk(mustApply(t, s, Event{Agent: "c1", Kind: KindPrompt, At: at(3)}))
+	if len(s.PhoneAsks) != 0 {
+		t.Fatal("marked a running agent")
+	}
+}
+
+func TestRecapAndDecisionArePublishedOnlyAsAllowed(t *testing.T) {
+	s := NewState()
+	d := &Decision{Choice: "Allow", AnsweredBy: AnsweredByApprover, Approver: "phone", ApproverID: "m_phone", At: at(2)}
+	a := mustApply(t, s, Event{Agent: "c1", Kind: KindUpdate, At: at(1), Recap: "- a\n- b"})
+	a = mustApply(t, s, Event{Agent: "c1", Kind: KindUpdate, At: at(2), Decision: d})
+	if a.Recap != "- a\n- b" || a.LastDecision == nil || *a.LastDecision != *d {
+		t.Fatalf("stored: %+v", a)
+	}
+	if p := a.Published(false); p.Recap != "" || p.LastDecision == nil {
+		t.Fatalf("recap off: %+v", p)
+	}
+	if p := a.Published(true); p.Recap == "" {
+		t.Fatal("recap on dropped it")
+	}
+}

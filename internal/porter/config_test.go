@@ -105,3 +105,49 @@ func TestCollectStatus(t *testing.T) {
 		t.Fatalf("implausible: %+v", s)
 	}
 }
+
+func TestRemoveApproverRewritesOnlyThatLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	src := "# mine\napprovers = [\"m_phone\", \"m_tablet\"] # who answers\napprovals = \"phone\"\nfuture_key = \"kept\"\nrecap = true\n\n[share]\nagents = \"*\"\n"
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := RemoveApprover(path, "m_other"); ok || err != nil {
+		t.Fatalf("non-approver removed: %v %v", ok, err)
+	}
+	if ok, err := RemoveApprover(path, "m_phone"); !ok || err != nil {
+		t.Fatalf("remove: %v %v", ok, err)
+	}
+	b, _ := os.ReadFile(path)
+	want := "# mine\napprovers = [\"m_tablet\"] # who answers\napprovals = \"phone\"\nfuture_key = \"kept\"\nrecap = true\n\n[share]\nagents = \"*\"\n"
+	if string(b) != want {
+		t.Fatalf("rewrite:\n%s", b)
+	}
+	c, err := LoadConfig(path)
+	if err != nil || !reflect.DeepEqual(c.Approvers, []string{"m_tablet"}) || !c.Recap || c.Approvals != ApprovalsPhone {
+		t.Fatalf("reloaded: %+v %v", c, err)
+	}
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v", info.Mode())
+	}
+}
+
+func TestRecapConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	c := DefaultConfig()
+	if err := SaveConfig(path, c); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := LoadConfig(path); got.Recap {
+		t.Fatal("recap defaults on")
+	}
+	c.Recap = true
+	SaveConfig(path, c)
+	if got, err := LoadConfig(path); err != nil || !got.Recap {
+		t.Fatalf("recap: %+v %v", got, err)
+	}
+	os.WriteFile(path, []byte("recap = \"maybe\"\n"), 0o600)
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("bad recap accepted")
+	}
+}

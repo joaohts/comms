@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -87,7 +86,7 @@ func (a *app) porterEvent(env porterEnv, args []string) error {
 	fs := flag.NewFlagSet("porter event", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var e porter.Event
-	var at, needsKind, needsText, special string
+	var at, needsKind, needsText, special, recap string
 	fs.StringVar(&e.Agent, "agent", "", "agent id")
 	fs.StringVar(&e.Harness, "harness", "", "harness name")
 	fs.StringVar(&e.Kind, "kind", "", "start|prompt|needs|stop|end|update")
@@ -100,6 +99,7 @@ func (a *app) porterEvent(env porterEnv, args []string) error {
 	fs.StringVar(&needsKind, "needs-kind", "", "why the agent needs the user")
 	fs.StringVar(&needsText, "needs-text", "", "short description of what is needed")
 	fs.StringVar(&special, "special", "", "true|false")
+	fs.StringVar(&recap, "recap", "", "short recap, 3-5 bullets")
 	if err := fs.Parse(args); err != nil {
 		return usageError(err.Error())
 	}
@@ -126,6 +126,15 @@ func (a *app) porterEvent(env porterEnv, args []string) error {
 		}
 		e.Special = &v
 	}
+	if recap = strings.TrimSpace(recap); recap != "" {
+		if len([]rune(recap)) > porter.MaxRecap {
+			return usageError(fmt.Sprintf("--recap must be at most %d characters", porter.MaxRecap))
+		}
+		// Opt-in per machine: without recap = true it is never stored or sent.
+		if cfg, err := porter.LoadConfig(porter.ConfigPath()); err == nil && cfg.Recap {
+			e.Recap = recap
+		}
+	}
 	out, err := applyEvent(env.state, e)
 	if err != nil || !a.jsonOutput {
 		return err
@@ -136,10 +145,13 @@ func (a *app) porterEvent(env porterEnv, args []string) error {
 	return a.output(out)
 }
 
-func applyEvent(st porter.Store, e porter.Event) (*porter.Agent, error) {
+func applyEvent(st porter.Store, e porter.Event, also ...func(*porter.State, *porter.Agent)) (*porter.Agent, error) {
 	var out *porter.Agent
 	err := st.Update(func(s *porter.State) error {
 		ag, err := s.Apply(e)
+		for _, f := range also {
+			f(s, ag)
+		}
 		if ag != nil {
 			c := ag.View()
 			out = &c
@@ -426,19 +438,23 @@ func (a *app) porterNotify(ctx context.Context, args []string) error {
 	f.StringVar(&q.Priority, "priority", "normal", "")
 	ask := f.String("ask", "", "")
 	f.StringVar(&q.Link, "link", "", "")
+	f.StringVar(&q.Draft, "draft", "", "")
 	from := f.String("from", "", "")
 	expires := f.Duration("expires", 0, "")
 	if err := parse(f, args); err != nil {
 		return err
 	}
 	if f.NArg() > 0 || q.To == "" || q.Title == "" {
-		return usageError(`usage: comms porter notify --to PEER --title T --body B --reason R [--priority normal|high] [--ask "A,B"] [--link L] [--from ALIAS] [--expires 1h]`)
+		return usageError(`usage: comms porter notify --to PEER --title T --body B --reason R [--priority normal|high] [--ask "A,B" [--draft TEXT]] [--link L] [--from ALIAS] [--expires 1h]`)
 	}
 	if strings.TrimSpace(q.Reason) == "" {
 		return usageError("--reason is required: say why you are notifying")
 	}
 	if *ask != "" {
 		q.Ask = strings.Split(*ask, ",")
+	}
+	if q.Draft != "" && len(q.Ask) == 0 {
+		return usageError("--draft needs --ask: the draft is offered with the answer choices")
 	}
 	q.ExpiresMS = expires.Milliseconds()
 	var err error
@@ -449,7 +465,36 @@ func (a *app) porterNotify(ctx context.Context, args []string) error {
 	if err := a.c.Do(ctx, "POST", "/v1/porter/notify", q, &out); err != nil {
 		return err
 	}
-	return a.output(out)
+	if len(q.Ask) == 0 {
+		return a.output(out)
+	}
+	// A question: wait for the answer (it is also forwarded to the asking
+	// identity as porter.answer). Prints the choice and, if present, the text.
+	id, _ := out["id"].(string)
+	res, err := a.waitQuestion(ctx, comms.PorterQuestion{ID: id, State: "pending"})
+	if err != nil {
+		return err
+	}
+	if res.State != "answered" {
+		if a.jsonOutput {
+			a.output(map[string]any{"id": id, "state": res.State})
+		} else {
+			fmt.Fprintln(a.out, res.State)
+		}
+		return exitError{exitTimeout}
+	}
+	if a.jsonOutput {
+		v := map[string]any{"choice": res.Choice}
+		if res.Text != "" {
+			v["text"] = res.Text
+		}
+		return a.output(v)
+	}
+	fmt.Fprintln(a.out, res.Choice)
+	if res.Text != "" {
+		fmt.Fprintln(a.out, res.Text)
+	}
+	return nil
 }
 
 // question asks every approver and waits for the outcome. Cancelling ctx
@@ -459,6 +504,12 @@ func (a *app) question(ctx context.Context, q comms.PorterQuestionRequest) (comm
 	if err := a.c.Do(ctx, "POST", "/v1/porter/questions", q, &out); err != nil {
 		return out, err
 	}
+	return a.waitQuestion(ctx, out)
+}
+
+// waitQuestion waits for a pending question to settle; cancelling ctx
+// withdraws it.
+func (a *app) waitQuestion(ctx context.Context, out comms.PorterQuestion) (comms.PorterQuestion, error) {
 	id := out.ID
 	for out.State == "pending" {
 		if ctx.Err() != nil {
@@ -479,32 +530,9 @@ func (a *app) question(ctx context.Context, q comms.PorterQuestionRequest) (comm
 	return out, nil
 }
 
-type auditRecord struct {
-	At     time.Time `json:"at"`
-	Kind   string    `json:"kind"`
-	ID     string    `json:"id,omitempty"`
-	Agent  string    `json:"agent,omitempty"`
-	Text   string    `json:"text,omitempty"`
-	Mode   string    `json:"mode,omitempty"`
-	Result string    `json:"result"`
-	By     string    `json:"by,omitempty"`
-	Error  string    `json:"error,omitempty"`
-}
+type auditRecord = porter.AuditRecord
 
-func audit(env porterEnv, r auditRecord) {
-	r.At = time.Now().UTC().Truncate(time.Second)
-	path := env.path("audit.jsonl")
-	if os.MkdirAll(filepath.Dir(path), 0o700) != nil {
-		return
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	b, _ := json.Marshal(r)
-	f.Write(append(b, '\n'))
-}
+func audit(env porterEnv, r auditRecord) { porter.AppendAudit(env.path("audit.jsonl"), r) }
 
 func (a *app) porterAsk(ctx context.Context, env porterEnv, args []string) error {
 	f := flags("porter ask")
@@ -521,7 +549,7 @@ func (a *app) porterAsk(ctx context.Context, env porterEnv, args []string) error
 	if q.Agent == "" {
 		q.Agent = a.getenv("CLAUDE_CODE_SESSION_ID")
 	}
-	result, err := a.ask(ctx, env, q, "cli")
+	result, _, err := a.ask(ctx, env, q, "cli")
 	if err != nil {
 		return err
 	}
@@ -535,8 +563,9 @@ func (a *app) porterAsk(ctx context.Context, env porterEnv, args []string) error
 	return nil
 }
 
-// ask runs a permission question and audits it: allow | deny | timeout.
-func (a *app) ask(ctx context.Context, env porterEnv, q comms.PorterQuestionRequest, mode string) (string, error) {
+// ask runs a permission question and audits it: allow | deny | timeout |
+// cancelled, and the question id ("" when it was never created).
+func (a *app) ask(ctx context.Context, env porterEnv, q comms.PorterQuestionRequest, mode string) (string, string, error) {
 	out, err := a.question(ctx, q)
 	r := auditRecord{Kind: q.Kind, ID: out.ID, Agent: q.Agent, Text: clipText(q.Text, 300), Mode: mode, By: out.By}
 	result := "timeout"
@@ -544,7 +573,7 @@ func (a *app) ask(ctx context.Context, env porterEnv, q comms.PorterQuestionRequ
 	case err != nil:
 		r.Result, r.Error = "error", err.Error()
 		audit(env, r)
-		return "", err
+		return "", out.ID, err
 	case out.State == "answered" && out.Choice == "Allow":
 		result = "allow"
 	case out.State == "answered" && out.Choice == "Deny":
@@ -554,7 +583,34 @@ func (a *app) ask(ctx context.Context, env porterEnv, q comms.PorterQuestionRequ
 	}
 	r.Result = result
 	audit(env, r)
-	return result, nil
+	recordDecision(env, q.Agent, out)
+	return result, out.ID, nil
+}
+
+// recordDecision stores how a permission question tied to agent resolved as
+// the agent's last_decision.
+func recordDecision(env porterEnv, agent string, out comms.PorterQuestion) {
+	if agent == "" {
+		return
+	}
+	d := porter.Decision{At: time.Now().UTC().Truncate(time.Second)}
+	switch out.State {
+	case "answered":
+		d.Choice, d.AnsweredBy, d.Approver, d.ApproverID = out.Choice, porter.AnsweredByApprover, out.ByAlias, out.By
+	case "timeout":
+		d.AnsweredBy = porter.AnsweredByTimeout
+	case "cancelled":
+		d.AnsweredBy = porter.AnsweredByTerminal
+	default:
+		return
+	}
+	env.state.Update(func(s *porter.State) error {
+		if s.Agents[agent] == nil {
+			return nil // not a tracked agent; nothing to annotate
+		}
+		_, err := s.Apply(porter.Event{Agent: agent, Kind: porter.KindUpdate, Decision: &d})
+		return err
+	})
 }
 
 func (a *app) porterAskTrust(ctx context.Context, env porterEnv, args []string) error {

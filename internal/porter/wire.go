@@ -23,6 +23,7 @@ const (
 	TypeNotify      = "porter.notify"
 	TypeAnswer      = "porter.answer"
 	TypeCancel      = "porter.cancel"
+	TypeResign      = "porter.resign"
 )
 
 // WireVersion is the "v" of every porter message.
@@ -46,6 +47,7 @@ type Inbound struct {
 	Trust   string            `json:"trust,omitempty"`
 	ID      string            `json:"id,omitempty"`
 	Choice  string            `json:"choice,omitempty"`
+	Text    string            `json:"text,omitempty"`
 	Machine string            `json:"machine,omitempty"`
 	Topic   string            `json:"topic,omitempty"`
 	Items   []json.RawMessage `json:"items,omitempty"`
@@ -93,6 +95,9 @@ func Parse(body string) (Inbound, error) {
 	case TypeAnswer:
 		if c.ID == "" || c.Choice == "" {
 			return c, fmt.Errorf("porter.answer requires id and choice")
+		}
+		if len([]rune(c.Text)) > MaxDraft {
+			return c, fmt.Errorf("porter.answer text too long")
 		}
 	case "":
 		return c, ErrNotPorter
@@ -174,12 +179,13 @@ func NewValueSnapshot(machine, topic string, value any) Snapshot {
 	return Snapshot{Type: TypeSnapshot, V: WireVersion, Machine: machine, Topic: topic, Value: value}
 }
 
-// AgentItems converts the default agent order into snapshot items.
-func AgentItems(s *State) []any {
+// AgentItems converts the default agent order into snapshot items; recap
+// only when the machine opted in.
+func AgentItems(s *State, recap bool) []any {
 	l := s.List()
 	out := make([]any, len(l))
 	for i, a := range l {
-		out[i] = a
+		out[i] = a.Published(recap)
 	}
 	return out
 }

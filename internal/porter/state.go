@@ -61,7 +61,31 @@ type Event struct {
 	AgentType string
 	Needs     *Needs
 	Special   *bool
+	Recap     string    // stored only where config recap = true; the caller decides
+	Decision  *Decision // last resolved permission question for this agent
 }
+
+// MaxRecap bounds an agent recap (3-5 short bullets).
+const MaxRecap = 600
+
+// Decision answers a permission question tied to an agent. AnsweredBy is
+// "approver" (a phone or other approver; ApproverID tells which, so an app
+// shows "phone" when it is its own id), "terminal" (the question was withdrawn
+// and the prompt went to the terminal) or "timeout".
+type Decision struct {
+	Choice     string    `json:"choice,omitempty"`
+	AnsweredBy string    `json:"answered_by"`
+	Approver   string    `json:"approver,omitempty"`
+	ApproverID string    `json:"approver_id,omitempty"`
+	At         time.Time `json:"at"`
+}
+
+// Decision sources.
+const (
+	AnsweredByApprover = "approver"
+	AnsweredByTerminal = "terminal"
+	AnsweredByTimeout  = "timeout"
+)
 
 type Agent struct {
 	ID           string     `json:"id"`
@@ -74,6 +98,8 @@ type Agent struct {
 	Status       string     `json:"status"`
 	Needs        *Needs     `json:"needs,omitempty"`
 	Summary      string     `json:"summary,omitempty"`
+	Recap        string     `json:"recap,omitempty"`
+	LastDecision *Decision  `json:"last_decision,omitempty"`
 	Special      bool       `json:"special"`
 	StartedAt    time.Time  `json:"started_at"`
 	LastActiveAt time.Time  `json:"last_active_at"`
@@ -92,11 +118,42 @@ func (a Agent) View() Agent {
 	return a
 }
 
+// Published is the agent as sent to peers; recap only when the machine opted in.
+func (a Agent) Published(recap bool) Agent {
+	a = a.View()
+	if !recap {
+		a.Recap = ""
+	}
+	return a
+}
+
 type State struct {
 	Agents map[string]*Agent `json:"agents"`
 	// SpecialIdentities holds the special flag of persistent comms identities
 	// (by alias) so it survives across their sessions.
 	SpecialIdentities map[string]bool `json:"special_identities,omitempty"`
+	// PhoneAsks marks needs_you transitions (agent id → status_since) for
+	// which a permission question goes to the phone; that notify carries the
+	// push, so the agent-status push for the same transition is skipped.
+	PhoneAsks map[string]time.Time `json:"phone_asks,omitempty"`
+}
+
+// MarkPhoneAsk records that a's current needs_you transition is being asked
+// on the phone.
+func (s *State) MarkPhoneAsk(a *Agent) {
+	if a == nil || a.Status != StatusNeedsYou {
+		return
+	}
+	if s.PhoneAsks == nil {
+		s.PhoneAsks = map[string]time.Time{}
+	}
+	s.PhoneAsks[a.ID] = a.StatusSince
+}
+
+// PhoneAsked reports whether a's current transition was marked by MarkPhoneAsk.
+func (s *State) PhoneAsked(a Agent) bool {
+	t, ok := s.PhoneAsks[a.ID]
+	return ok && a.Status == StatusNeedsYou && t.Equal(a.StatusSince)
 }
 
 func NewState() *State { return &State{Agents: map[string]*Agent{}} }
@@ -152,6 +209,13 @@ func (s *State) Apply(e Event) (*Agent, error) {
 	if e.Summary != "" {
 		a.Summary = e.Summary
 	}
+	if e.Recap != "" {
+		a.Recap = clip(strings.TrimSpace(e.Recap), MaxRecap)
+	}
+	if e.Decision != nil {
+		d := *e.Decision
+		a.LastDecision = &d
+	}
 	if e.Parent != "" {
 		a.Parent = e.Parent
 	}
@@ -186,6 +250,7 @@ func (s *State) Apply(e Event) (*Agent, error) {
 }
 
 func (s *State) setStatus(a *Agent, t time.Time, status, reason string) {
+	delete(s.PhoneAsks, a.ID)
 	a.accumulate(t, status)
 	a.Status = status
 	a.Needs = nil
@@ -239,6 +304,7 @@ func (s *State) Sweep(now time.Time) (changed bool, purged []string) {
 		if a.Status == StatusEnded {
 			if a.EndedAt == nil || now.Sub(*a.EndedAt) > KeepEnded {
 				delete(s.Agents, id)
+				delete(s.PhoneAsks, id)
 				purged = append(purged, id)
 			}
 			continue

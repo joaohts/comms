@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/joaohts/comms/internal/porter"
@@ -315,4 +316,17 @@ func key32(b []byte) (*[32]byte, error) {
 	var v [32]byte
 	copy(v[:], b)
 	return &v, nil
+}
+
+// Fingerprint is how people compare a machine's public key out of band (the
+// phone app shows the same): the first 32 hex characters of SHA-256 over the
+// raw 32-byte X25519 public key, in groups of 4 separated by spaces.
+func Fingerprint(publicKey []byte) string {
+	sum := sha256.Sum256(publicKey)
+	h := hex.EncodeToString(sum[:16])
+	groups := make([]string, 0, 8)
+	for i := 0; i < len(h); i += 4 {
+		groups = append(groups, h[i:i+4])
+	}
+	return strings.Join(groups, " ")
 }

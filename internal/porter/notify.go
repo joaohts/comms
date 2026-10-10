@@ -50,14 +50,19 @@ type Notify struct {
 	Link      string     `json:"link,omitempty"`
 	Context   Context    `json:"context"`
 	Trust     *TrustRef  `json:"trust,omitempty"`
+	Draft     string     `json:"draft,omitempty"`
 	SentAt    time.Time  `json:"sent_at"`
 }
+
+// MaxDraft bounds a notify draft and the (possibly edited) answer text.
+const MaxDraft = 4000
 
 type Answer struct {
 	Type   string `json:"type"`
 	V      int    `json:"v"`
 	ID     string `json:"id"`
 	Choice string `json:"choice"`
+	Text   string `json:"text,omitempty"`
 }
 
 type Cancel struct {
@@ -72,6 +77,7 @@ const (
 	ResolvedTerminal = "terminal"
 	ResolvedTimeout  = "timeout"
 	ResolvedAnswered = "answered"
+	ResolvedResigned = "resigned" // the recipient resigned as an approver
 )
 
 func NewID(prefix string) string {
@@ -94,6 +100,12 @@ func ValidateNotify(n *Notify) error {
 	}
 	if len([]rune(n.Title)) > 200 || len([]rune(n.Body)) > 4000 || len([]rune(n.Reason)) > 300 || len(n.Link) > 500 {
 		return fmt.Errorf("title, body, reason or link too long")
+	}
+	if len([]rune(n.Draft)) > MaxDraft {
+		return fmt.Errorf("draft too long")
+	}
+	if n.Draft != "" && len(n.Ask) == 0 {
+		return fmt.Errorf("a draft needs answer choices (--ask)")
 	}
 	if n.Priority == "" {
 		n.Priority = "normal"

@@ -898,6 +898,7 @@ func payloadFor(m Message) Payload {
 	}
 	return p
 }
+
 // createdAt stamps a send. Recipients deliver in (created_at, id) order, so
 // sends from this node within one millisecond must not tie: a random ID would
 // otherwise reorder, say, a porter.subscribed reply and the snapshots after it.

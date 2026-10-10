@@ -106,12 +106,12 @@ func TestSnapshotTruncatesToLimit(t *testing.T) {
 		mustApply(t, s, Event{Agent: string(rune('A' + i)), Kind: KindPrompt, At: at(i), Summary: strings.Repeat("x", 200)})
 	}
 	mustApply(t, s, Event{Agent: "needs", Kind: KindNeeds, At: at(0)})
-	snap := NewSnapshot("mac", TopicAgents, AgentItems(s), 4096)
+	snap := NewSnapshot("mac", TopicAgents, AgentItems(s, false), 4096)
 	b, _ := json.Marshal(snap)
 	if !snap.Truncated || len(b) > 4096 || snap.Items[0].(Agent).ID != "needs" || snap.Type != TypeSnapshot || snap.Topic != TopicAgents || snap.V != 1 {
 		t.Fatalf("truncated=%v size=%d first=%+v", snap.Truncated, len(b), snap.Items[0])
 	}
-	if full := NewSnapshot("mac", TopicAgents, AgentItems(s), 1<<20); full.Truncated || len(full.Items) != 51 {
+	if full := NewSnapshot("mac", TopicAgents, AgentItems(s, false), 1<<20); full.Truncated || len(full.Items) != 51 {
 		t.Fatal("unexpected truncation")
 	}
 }

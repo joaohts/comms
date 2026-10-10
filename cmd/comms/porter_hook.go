@@ -151,42 +151,75 @@ func (a *app) porterHook(ctx context.Context, env porterEnv, args []string) erro
 	if !ok {
 		return reply(nil)
 	}
+	if in.Event == "PermissionRequest" && *harness == "claude" {
+		decision := a.permissionRequest(ctx, env, in, e)
+		return reply(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PermissionRequest", "decision": map[string]string{"behavior": decision}}})
+	}
 	if _, err := applyEvent(env.state, e); err != nil {
 		fmt.Fprintln(a.errOut, "porter hook:", err)
 	}
-	if in.Event != "PermissionRequest" || *harness != "claude" {
-		return reply(nil)
-	}
-	decision := a.approval(ctx, env, in)
-	if decision != "ask" {
-		// Answered remotely: the agent resumes (or reports the denial).
-		applyEvent(env.state, porter.Event{Agent: in.SessionID, Harness: *harness, Kind: porter.KindPrompt})
-	}
-	return reply(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PermissionRequest", "decision": map[string]string{"behavior": decision}}})
+	return reply(nil)
 }
 
-// approval decides a PermissionRequest: allow | deny | ask.
-func (a *app) approval(ctx context.Context, env porterEnv, in hookInput) string {
-	cfg, err := porter.LoadConfig(porter.ConfigPath())
-	text := toolText(in, 300)
-	record := auditRecord{Kind: porter.NotifyPermission, Agent: in.SessionID, Text: text, Mode: cfg.Approvals}
-	if err != nil || !cfg.Exists {
-		record.Result, record.Mode = "ask", "unconfigured"
-		audit(env, record)
+// permissionRequest records the needs_you event and decides the prompt:
+// allow | deny | ask. When the phone is asked, the needs_you transition is
+// marked so porter sends the permission notify's push and not also the
+// agent-status push; if the question cannot be sent, the event is recorded
+// again unmarked so the status push still goes out.
+func (a *app) permissionRequest(ctx context.Context, env porterEnv, in hookInput, e porter.Event) string {
+	cfg, phone := a.approvalRoute(env, in)
+	_, err := applyEvent(env.state, e, func(s *porter.State, ag *porter.Agent) {
+		if phone {
+			s.MarkPhoneAsk(ag)
+		}
+	})
+	if err != nil {
+		fmt.Fprintln(a.errOut, "porter hook:", err)
+	}
+	if !phone {
 		return "ask"
+	}
+	decision, sent := a.askPhone(ctx, env, in, cfg)
+	if !sent {
+		applyEvent(env.state, e)
+	}
+	if decision != "ask" {
+		// Answered remotely: the agent resumes (or reports the denial).
+		applyEvent(env.state, porter.Event{Agent: in.SessionID, Harness: e.Harness, Kind: porter.KindPrompt})
+	}
+	return decision
+}
+
+// approvalRoute reports whether a PermissionRequest goes to the phone,
+// auditing the ones that stay at the terminal.
+func (a *app) approvalRoute(env porterEnv, in hookInput) (porter.Config, bool) {
+	cfg, err := porter.LoadConfig(porter.ConfigPath())
+	record := auditRecord{Kind: porter.NotifyPermission, Agent: in.SessionID, Text: toolText(in, 300), Mode: cfg.Approvals, Result: "ask"}
+	if err != nil || !cfg.Exists {
+		record.Mode = "unconfigured"
+		audit(env, record)
+		return cfg, false
 	}
 	switch cfg.Approvals {
 	case porter.ApprovalsTerminal:
-		record.Result = "ask"
 		audit(env, record)
-		return "ask"
+		return cfg, false
 	case porter.ApprovalsAuto:
 		if idle, ok := hidIdle(); ok && idle < cfg.IdleThreshold {
-			record.Result, record.Mode = "ask", "auto:present"
+			record.Mode = "auto:present"
 			audit(env, record)
-			return "ask"
+			return cfg, false
 		}
-		record.Mode = "auto:away"
+	}
+	return cfg, true
+}
+
+// askPhone asks the approvers: allow | deny | ask. sent is false when no
+// question went out (node down, no approver reachable).
+func (a *app) askPhone(ctx context.Context, env porterEnv, in hookInput, cfg porter.Config) (decision string, sent bool) {
+	mode := cfg.Approvals
+	if mode == porter.ApprovalsAuto {
+		mode = "auto:away"
 	}
 	if a.c == nil {
 		a.c = client.New(env.socket)
@@ -194,16 +227,16 @@ func (a *app) approval(ctx context.Context, env porterEnv, in hookInput) string 
 	}
 	ctx, cancel := context.WithTimeout(ctx, cfg.AskTimeout+5*time.Second)
 	defer cancel()
-	result, err := a.ask(ctx, env, comms.PorterQuestionRequest{Kind: porter.NotifyPermission, Text: text, Agent: in.SessionID, TimeoutMS: cfg.AskTimeout.Milliseconds()}, record.Mode)
+	result, id, err := a.ask(ctx, env, comms.PorterQuestionRequest{Kind: porter.NotifyPermission, Text: toolText(in, 300), Agent: in.SessionID, TimeoutMS: cfg.AskTimeout.Milliseconds()}, mode)
 	switch {
 	case err != nil:
-		return "ask"
+		return "ask", id != ""
 	case result == "allow":
-		return "allow"
+		return "allow", true
 	case result == "deny":
-		return "deny"
+		return "deny", true
 	}
-	return "ask"
+	return "ask", true
 }
 
 var hidIdleTime = regexp.MustCompile(`"HIDIdleTime"\s*=\s*(\d+)`)
