@@ -2,7 +2,7 @@
 
 Porter shares machine state between comms peers and carries notifications and
 approval questions to João's phone. It runs inside the comms node, is opt-in, and
-is off by default. Design history: `~/notes/projects/pager-agent-monitor.md`.
+is off by default. Design history: `~/notes/kb/projects/pager-app/pager-agent-monitor.md`.
 
 Porter is enabled on a machine by the presence of `~/.config/porter/config.toml`
 and a node started with `comms serve --porter`.
