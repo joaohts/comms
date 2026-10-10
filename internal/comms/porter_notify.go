@@ -28,6 +28,8 @@ type question struct {
 	trust    *porter.Trust
 	done     chan struct{}
 	resolved time.Time
+	// resolution is the porter.Resolved* sent with cancels once settled.
+	resolution string
 }
 
 // PorterNotifyRequest is the local API body of POST /v1/porter/notify.
@@ -264,10 +266,13 @@ func (b *porterBridge) ask(ctx context.Context, q PorterQuestionRequest) (Porter
 	if timeout <= 0 || timeout > time.Hour {
 		timeout = cfg.AskTimeout
 	}
-	now := time.Now().UTC().Truncate(time.Second)
-	exp := now.Add(timeout)
+	// The wire carries whole seconds, but the deadline itself must not be
+	// truncated: a sub-second timeout would otherwise be born expired.
+	exact := time.Now().UTC()
+	now := exact.Truncate(time.Second)
+	exp := exact.Add(timeout).Truncate(time.Second)
 	nt := porter.Notify{Type: porter.TypeNotify, V: porter.WireVersion, ID: porter.NewID("ntf_"), Kind: q.Kind, Priority: "high", Context: c, SentAt: now, ExpiresAt: &exp}
-	qn := &question{expires: exp, state: "pending", done: make(chan struct{})}
+	qn := &question{expires: exact.Add(timeout), state: "pending", done: make(chan struct{})}
 	switch q.Kind {
 	case porter.NotifyPermission:
 		nt.Title, nt.Body, nt.Reason, nt.Ask = "Permission needed", q.Text, "an agent is waiting on a permission prompt", porter.PermissionChoices
@@ -305,9 +310,16 @@ func (b *porterBridge) ask(ctx context.Context, q PorterQuestionRequest) (Porter
 			log.Printf("porter ask %s: %s", approver, errorCode(e))
 			continue
 		}
+		// The question may have settled (expired, answered by another
+		// approver) while this delivery was in flight; resolve only cancels
+		// targets it already knows, so cancel a late one here.
 		b.mu.Lock()
 		qn.targets = append(qn.targets, machine+":"+agent)
+		settled, resolution, by := qn.state != "pending", qn.resolution, qn.by
 		b.mu.Unlock()
+		if settled && (by == "" || machine != by) {
+			b.send(machine+":"+agent, porter.Cancel{Type: porter.TypeCancel, V: porter.WireVersion, ID: nt.ID, Resolution: resolution})
+		}
 	}
 	b.mu.Lock()
 	reached := len(qn.targets)
@@ -407,7 +419,7 @@ func (b *porterBridge) resolve(id, state, choice, by, resolution string) {
 		b.mu.Unlock()
 		return
 	}
-	q.state, q.choice, q.by, q.resolved = state, choice, by, time.Now()
+	q.state, q.choice, q.by, q.resolved, q.resolution = state, choice, by, time.Now(), resolution
 	close(q.done)
 	targets := slices.Clone(q.targets)
 	b.mu.Unlock()
