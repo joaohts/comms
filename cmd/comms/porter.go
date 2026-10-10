@@ -86,7 +86,8 @@ func (a *app) porterEvent(env porterEnv, args []string) error {
 	fs := flag.NewFlagSet("porter event", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var e porter.Event
-	var at, needsKind, needsText, errorKind, special, recap string
+	var at, needsKind, needsText, errorKind, special, recap, paused string
+	var keep bool
 	fs.StringVar(&e.Agent, "agent", "", "agent id")
 	fs.StringVar(&e.Harness, "harness", "", "harness name")
 	fs.StringVar(&e.Kind, "kind", "", "start|prompt|needs|stop|error|end|update")
@@ -101,8 +102,26 @@ func (a *app) porterEvent(env porterEnv, args []string) error {
 	fs.StringVar(&errorKind, "error-kind", "", "API error type (kind=error)")
 	fs.StringVar(&special, "special", "", "true|false")
 	fs.StringVar(&recap, "recap", "", "short recap, 3-5 bullets")
+	fs.BoolVar(&keep, "keep", false, "long-lived agent: never stale or graveyarded by sweep")
+	fs.BoolVar(&e.Heartbeat, "heartbeat", false, "liveness ping (kind update): refreshes heartbeat_at only")
+	fs.StringVar(&paused, "paused", "", "true|false (kept agent up but taking no new turns)")
 	if err := fs.Parse(args); err != nil {
 		return usageError(err.Error())
+	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "keep" {
+			e.Keep = &keep
+		}
+	})
+	if e.Heartbeat && e.Kind != porter.KindUpdate {
+		return usageError("--heartbeat requires --kind update")
+	}
+	if paused != "" {
+		v, err := strconv.ParseBool(paused)
+		if err != nil {
+			return usageError("--paused must be true or false")
+		}
+		e.Paused = &v
 	}
 	if fs.NArg() > 0 {
 		return usageError("porter event takes flags only")

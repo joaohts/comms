@@ -43,6 +43,15 @@ const (
 	KeepEnded  = 7 * 24 * time.Hour
 )
 
+// Kept agents (long-lived daemons such as Joana) report liveness with
+// heartbeats. HeartbeatEvery bounds how often a heartbeat changes the stored
+// (and so published) heartbeat_at; HeartbeatFresh is how old heartbeat_at
+// may be before clients show the agent as deactivated.
+const (
+	HeartbeatEvery = time.Minute
+	HeartbeatFresh = 3 * time.Minute
+)
+
 type Needs struct {
 	Kind string `json:"kind"`
 	Text string `json:"text"`
@@ -74,6 +83,11 @@ type Event struct {
 	Needs     *Needs
 	Error     *ErrorInfo
 	Special   *bool
+	Keep      *bool // long-lived agent: never stale, never graveyard by sweep
+	Paused    *bool // a kept agent's brain is up but takes no new turns
+	// Heartbeat marks a liveness ping (kind update only): it refreshes
+	// heartbeat_at and nothing else about status, timers or last_active_at.
+	Heartbeat bool
 	// Transcript is the harness transcript path, kept in local state only.
 	Transcript string
 	Recap      string    // stored only where config recap = true; the caller decides
@@ -117,6 +131,9 @@ type Agent struct {
 	Recap        string     `json:"recap,omitempty"`
 	LastDecision *Decision  `json:"last_decision,omitempty"`
 	Special      bool       `json:"special"`
+	Keep         bool       `json:"keep,omitempty"`
+	HeartbeatAt  *time.Time `json:"heartbeat_at,omitempty"`
+	Paused       bool       `json:"paused,omitempty"`
 	StartedAt    time.Time  `json:"started_at"`
 	LastActiveAt time.Time  `json:"last_active_at"`
 	StatusSince  time.Time  `json:"status_since"`
@@ -210,12 +227,15 @@ func (s *State) Apply(e Event) (*Agent, error) {
 	if !changes && e.Kind != KindUpdate {
 		return nil, fmt.Errorf("unknown event kind %q", e.Kind)
 	}
+	if e.Heartbeat && e.Kind != KindUpdate {
+		return nil, fmt.Errorf("a heartbeat must be kind %q", KindUpdate)
+	}
 	a := s.Agents[e.Agent]
 	if a == nil {
 		if e.Kind == KindEnd {
 			return nil, nil // nothing to bury
 		}
-		a = &Agent{ID: e.Agent, Status: StatusDone, StartedAt: e.At, StatusSince: e.At}
+		a = &Agent{ID: e.Agent, Status: StatusDone, StartedAt: e.At, StatusSince: e.At, LastActiveAt: e.At}
 		s.Agents[e.Agent] = a
 	}
 	if e.Harness != "" {
@@ -245,6 +265,22 @@ func (s *State) Apply(e Event) (*Agent, error) {
 	}
 	if e.Special != nil {
 		s.SetSpecial(a, *e.Special)
+	}
+	if e.Keep != nil {
+		a.Keep = *e.Keep
+	}
+	if e.Paused != nil {
+		a.Paused = *e.Paused
+	}
+	if e.Heartbeat {
+		// Throttled so a pinging daemon publishes at most one change per
+		// HeartbeatEvery; a stale heartbeat_at is always older than that, so
+		// coming back fresh is published at once.
+		if a.HeartbeatAt == nil || e.At.Sub(*a.HeartbeatAt) >= HeartbeatEvery {
+			t := e.At
+			a.HeartbeatAt = &t
+		}
+		return a, nil
 	}
 	if e.Transcript != "" {
 		if s.Transcripts == nil {
@@ -369,7 +405,8 @@ func (s *State) Sweep(now time.Time) (changed bool, purged []string) {
 		}
 		// Background subagents are silent between start and stop, and a parent
 		// stays alive while any of its subagents works.
-		if a.Parent != "" && Active(a.Status) || busy[id] {
+		// Kept agents report liveness by heartbeat instead.
+		if a.Parent != "" && Active(a.Status) || busy[id] || a.Keep {
 			continue
 		}
 		if now.Sub(a.LastActiveAt) > StaleAfter {

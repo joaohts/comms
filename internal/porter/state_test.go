@@ -1,7 +1,9 @@
 package porter
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -228,5 +230,67 @@ func TestRecapAndDecisionArePublishedOnlyAsAllowed(t *testing.T) {
 	}
 	if p := a.Published(true); p.Recap == "" {
 		t.Fatal("recap on dropped it")
+	}
+}
+
+func TestHeartbeatOnlyTouchesHeartbeatAndIsThrottled(t *testing.T) {
+	s := NewState()
+	yes := true
+	mustApply(t, s, Event{Agent: "j", Kind: KindStop, At: at(0), Keep: &yes})
+	a := mustApply(t, s, Event{Agent: "j", Kind: KindUpdate, At: at(10), Heartbeat: true})
+	if a.HeartbeatAt == nil || !a.HeartbeatAt.Equal(at(10)) {
+		t.Fatalf("first heartbeat not stored: %+v", a)
+	}
+	if !a.LastActiveAt.Equal(at(0)) || !a.StatusSince.Equal(at(0)) || a.Status != StatusDone || a.RunningMS != 0 {
+		t.Fatalf("heartbeat changed activity/status/timers: %+v", a)
+	}
+	a = mustApply(t, s, Event{Agent: "j", Kind: KindUpdate, At: at(69), Heartbeat: true})
+	if !a.HeartbeatAt.Equal(at(10)) {
+		t.Fatalf("heartbeat within %v rewrote heartbeat_at: %v", HeartbeatEvery, a.HeartbeatAt)
+	}
+	a = mustApply(t, s, Event{Agent: "j", Kind: KindUpdate, At: at(70), Heartbeat: true})
+	if !a.HeartbeatAt.Equal(at(70)) {
+		t.Fatalf("heartbeat after %v not stored: %v", HeartbeatEvery, a.HeartbeatAt)
+	}
+	// Back after a long gap (stale → fresh) is stored at once.
+	a = mustApply(t, s, Event{Agent: "j", Kind: KindUpdate, At: at(1000), Heartbeat: true, Paused: &yes})
+	if !a.HeartbeatAt.Equal(at(1000)) || !a.Paused || !a.LastActiveAt.Equal(at(0)) {
+		t.Fatalf("stale→fresh heartbeat: %+v", a)
+	}
+	if _, err := s.Apply(Event{Agent: "j", Kind: KindStop, At: at(1001), Heartbeat: true}); err == nil {
+		t.Fatal("heartbeat with kind stop accepted")
+	}
+}
+
+func TestSweepNeverBuriesKeptAgents(t *testing.T) {
+	s := NewState()
+	yes := true
+	mustApply(t, s, Event{Agent: "joana", Kind: KindStop, At: at(0), Keep: &yes})
+	mustApply(t, s, Event{Agent: "plain", Kind: KindStop, At: at(0)})
+	s.Sweep(at(0).Add(StaleAfter + time.Hour))
+	if a := s.Agents["joana"]; a.Status != StatusDone || a.EndReason != "" {
+		t.Fatalf("kept agent swept: %+v", a)
+	}
+	// Unchanged behaviour for agents without keep: stale after 24h.
+	if a := s.Agents["plain"]; a.Status != StatusEnded || a.EndReason != EndStale {
+		t.Fatalf("non-kept agent not swept: %+v", a)
+	}
+}
+
+func TestNonKeptAgentUnchanged(t *testing.T) {
+	s := NewState()
+	a := mustApply(t, s, Event{Agent: "a", Kind: KindStop, At: at(0)})
+	if a.Keep || a.Paused || a.HeartbeatAt != nil {
+		t.Fatalf("non-kept agent gained keep fields: %+v", a)
+	}
+	s.Sweep(at(0).Add(StaleAfter - time.Minute))
+	if s.Agents["a"].Status != StatusDone {
+		t.Fatalf("swept before StaleAfter: %+v", s.Agents["a"])
+	}
+	b, _ := json.Marshal(s.Agents["a"])
+	for _, k := range []string{`"keep"`, `"heartbeat_at"`, `"paused"`} {
+		if strings.Contains(string(b), k) {
+			t.Fatalf("non-kept agent JSON has %s: %s", k, b)
+		}
 	}
 }
