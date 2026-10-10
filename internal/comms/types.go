@@ -51,6 +51,7 @@ type Config struct {
 	PorterStatusInterval time.Duration `json:"-"`
 	PorterResubscribe    time.Duration `json:"-"`
 	PorterTrustGrace     time.Duration `json:"-"`
+	PorterAwayCheck      time.Duration `json:"-"` // default porter.AwayCheck
 }
 
 func DefaultConfig() Config {

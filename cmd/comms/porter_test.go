@@ -72,7 +72,7 @@ func TestHookEventMapping(t *testing.T) {
 		{hookInput{SessionID: "s", Event: "Notification", NotificationType: "permission_prompt", Message: "m"}, porter.KindNeeds, true},
 		{hookInput{SessionID: "s", Event: "Elicitation"}, porter.KindNeeds, true},
 		{hookInput{SessionID: "s", Event: "PermissionRequest", ToolName: "Bash", ToolInput: map[string]any{"command": "npm   install"}}, porter.KindNeeds, true},
-		{hookInput{SessionID: "s", Event: "StopFailure"}, porter.KindStop, true},
+		{hookInput{SessionID: "s", Event: "StopFailure"}, porter.KindError, true},
 		{hookInput{SessionID: "s", Event: "SessionEnd"}, porter.KindEnd, true},
 		{hookInput{SessionID: "s", Event: "SubagentStart", AgentID: "sub", AgentType: "Explore"}, porter.KindPrompt, true},
 		{hookInput{SessionID: "s", Event: "SubagentStop"}, "", false},
@@ -97,6 +97,30 @@ func TestHookEventMapping(t *testing.T) {
 	e, _ = hookEvent(cases[8].in, "claude")
 	if e.Agent != "sub" || e.Parent != "s" || e.AgentType != "Explore" {
 		t.Fatalf("subagent: %+v", e)
+	}
+	for _, c := range []struct {
+		raw, kind string
+	}{
+		{`{"session_id":"s","hook_event_name":"StopFailure","error_type":"rate_limit","error":"x"}`, "rate_limit"},
+		{`{"session_id":"s","hook_event_name":"StopFailure","error":"overloaded"}`, "overloaded"},
+		{`{"session_id":"s","hook_event_name":"StopFailure","error":{"type":"server_error"}}`, "server_error"},
+		{`{"session_id":"s","hook_event_name":"StopFailure"}`, "unknown"},
+	} {
+		var in hookInput
+		if err := json.Unmarshal([]byte(c.raw), &in); err != nil {
+			t.Fatal(err)
+		}
+		if e, ok := hookEvent(in, "claude"); !ok || e.Kind != porter.KindError || e.Error == nil || e.Error.Kind != c.kind {
+			t.Fatalf("%s → %+v", c.raw, e)
+		}
+	}
+	e, _ = hookEvent(hookInput{SessionID: "s", Event: "UserPromptSubmit", TranscriptPath: "/t/s.jsonl"}, "claude")
+	if e.Transcript != "/t/s.jsonl" {
+		t.Fatalf("transcript: %+v", e)
+	}
+	e, _ = hookEvent(hookInput{SessionID: "s", Event: "SubagentStart", AgentID: "sub", TranscriptPath: "/t/s.jsonl"}, "claude")
+	if e.Transcript != "/t/s/subagents/agent-sub.jsonl" {
+		t.Fatalf("subagent transcript: %+v", e)
 	}
 	long := hookInput{ToolName: "Write", ToolInput: map[string]any{"file_path": strings.Repeat("x", 500), "content": "secret"}}
 	if got := toolText(long, 120); len([]rune(got)) != 120 || strings.Contains(got, "secret") {

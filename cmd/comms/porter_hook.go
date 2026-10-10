@@ -23,18 +23,39 @@ import (
 
 // hookInput is the subset of Claude Code / Codex hook stdin porter reads.
 type hookInput struct {
-	SessionID        string         `json:"session_id"`
-	Cwd              string         `json:"cwd"`
-	Event            string         `json:"hook_event_name"`
-	NotificationType string         `json:"notification_type"`
-	Message          string         `json:"message"`
-	ToolName         string         `json:"tool_name"`
-	ToolInput        map[string]any `json:"tool_input"`
-	AgentID          string         `json:"agent_id"`
-	AgentType        string         `json:"agent_type"`
-	SessionTitle     string         `json:"session_title"`
-	TranscriptPath   string         `json:"transcript_path"`
-	AgentTranscript  string         `json:"agent_transcript_path"`
+	SessionID        string          `json:"session_id"`
+	Cwd              string          `json:"cwd"`
+	Event            string          `json:"hook_event_name"`
+	NotificationType string          `json:"notification_type"`
+	Message          string          `json:"message"`
+	ToolName         string          `json:"tool_name"`
+	ToolInput        map[string]any  `json:"tool_input"`
+	AgentID          string          `json:"agent_id"`
+	AgentType        string          `json:"agent_type"`
+	SessionTitle     string          `json:"session_title"`
+	TranscriptPath   string          `json:"transcript_path"`
+	AgentTranscript  string          `json:"agent_transcript_path"`
+	ErrorType        string          `json:"error_type"`
+	Error            json.RawMessage `json:"error"`
+}
+
+// errorKind is a StopFailure's error type: error_type, falling back to the
+// older error field.
+func errorKind(in hookInput) string {
+	if k := strings.TrimSpace(in.ErrorType); k != "" {
+		return clipText(k, 60)
+	}
+	var s string
+	if json.Unmarshal(in.Error, &s) == nil && strings.TrimSpace(s) != "" {
+		return clipText(strings.TrimSpace(s), 60)
+	}
+	var o struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(in.Error, &o) == nil && o.Type != "" {
+		return clipText(o.Type, 60)
+	}
+	return "unknown"
 }
 
 // subagentTranscript is where Claude keeps a real subagent's transcript.
@@ -52,7 +73,7 @@ func subagentTranscript(in hookInput) string {
 // hookEvent maps a hook to a porter event; ok is false for hooks porter
 // does not track. Subagent hooks fire in the parent and get their own row.
 func hookEvent(in hookInput, harness string) (porter.Event, bool) {
-	e := porter.Event{Agent: in.SessionID, Harness: harness, Title: in.SessionTitle}
+	e := porter.Event{Agent: in.SessionID, Harness: harness, Title: in.SessionTitle, Transcript: in.TranscriptPath}
 	if in.Cwd != "" {
 		e.Project = filepath.Base(in.Cwd)
 	}
@@ -74,8 +95,10 @@ func hookEvent(in hookInput, harness string) (porter.Event, bool) {
 		e.Kind, e.Needs = porter.KindNeeds, &porter.Needs{Kind: "input", Text: clipText(in.Message, 120)}
 	case "PermissionRequest":
 		e.Kind, e.Needs = porter.KindNeeds, &porter.Needs{Kind: "permission", Text: toolText(in, 120)}
-	case "Stop", "StopFailure":
+	case "Stop":
 		e.Kind = porter.KindStop
+	case "StopFailure":
+		e.Kind, e.Error = porter.KindError, &porter.ErrorInfo{Kind: errorKind(in)}
 	case "SessionEnd":
 		e.Kind = porter.KindEnd
 	case "SubagentStart", "SubagentStop":
@@ -83,6 +106,11 @@ func hookEvent(in hookInput, harness string) (porter.Event, bool) {
 			return e, false
 		}
 		e.Parent, e.Agent, e.AgentType, e.Title = in.SessionID, in.AgentID, in.AgentType, ""
+		// A subagent's liveness follows its own transcript, not the parent's.
+		e.Transcript = in.AgentTranscript
+		if harness == "claude" {
+			e.Transcript = subagentTranscript(in)
+		}
 		e.Kind = porter.KindPrompt
 		if in.Event == "SubagentStop" {
 			e.Kind = porter.KindStop

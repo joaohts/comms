@@ -86,10 +86,10 @@ func (a *app) porterEvent(env porterEnv, args []string) error {
 	fs := flag.NewFlagSet("porter event", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var e porter.Event
-	var at, needsKind, needsText, special, recap string
+	var at, needsKind, needsText, errorKind, special, recap string
 	fs.StringVar(&e.Agent, "agent", "", "agent id")
 	fs.StringVar(&e.Harness, "harness", "", "harness name")
-	fs.StringVar(&e.Kind, "kind", "", "start|prompt|needs|stop|end|update")
+	fs.StringVar(&e.Kind, "kind", "", "start|prompt|needs|stop|error|end|update")
 	fs.StringVar(&at, "at", "", "RFC3339 time (default now)")
 	fs.StringVar(&e.Title, "title", "", "title")
 	fs.StringVar(&e.Project, "project", "", "project")
@@ -98,6 +98,7 @@ func (a *app) porterEvent(env porterEnv, args []string) error {
 	fs.StringVar(&e.AgentType, "agent-type", "", "subagent type")
 	fs.StringVar(&needsKind, "needs-kind", "", "why the agent needs the user")
 	fs.StringVar(&needsText, "needs-text", "", "short description of what is needed")
+	fs.StringVar(&errorKind, "error-kind", "", "API error type (kind=error)")
 	fs.StringVar(&special, "special", "", "true|false")
 	fs.StringVar(&recap, "recap", "", "short recap, 3-5 bullets")
 	if err := fs.Parse(args); err != nil {
@@ -118,6 +119,9 @@ func (a *app) porterEvent(env porterEnv, args []string) error {
 	}
 	if needsKind != "" || needsText != "" {
 		e.Needs = &porter.Needs{Kind: needsKind, Text: needsText}
+	}
+	if errorKind != "" {
+		e.Error = &porter.ErrorInfo{Kind: errorKind}
 	}
 	if special != "" {
 		v, err := strconv.ParseBool(special)
@@ -232,7 +236,7 @@ func agentRow(ag porter.Agent, now time.Time) string {
 	run, wait := ag.RunningMS, ag.WaitingMS
 	cur := now.Sub(ag.StatusSince).Milliseconds()
 	switch ag.Status {
-	case porter.StatusRunning:
+	case porter.StatusRunning, porter.StatusAway:
 		run += cur
 	case porter.StatusNeedsYou:
 		wait += cur
@@ -254,6 +258,9 @@ func agentRow(ag porter.Agent, now time.Time) string {
 	summary := ag.Summary
 	if ag.Needs != nil {
 		summary = strings.TrimSpace(ag.Needs.Kind + ": " + ag.Needs.Text)
+	}
+	if ag.Error != nil {
+		summary = strings.TrimSpace("error: " + ag.Error.Kind)
 	}
 	if ag.Status == porter.StatusEnded {
 		summary = strings.TrimSpace(ag.EndReason + " " + summary)

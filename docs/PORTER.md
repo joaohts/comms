@@ -104,8 +104,9 @@ messaging grant **and** the topic's share entry includes it (`trusts`: approvers
   "title": "pager-refactor",               // custom name > comms alias
   "project": "notes",
   "identity": {"alias": "pager-refactor", "address": "personal-mac:pager-refactor", "persistent": false},
-  "status": "running | needs_you | done | ended",
+  "status": "running | away | needs_you | done | error | ended",
   "needs": {"kind": "permission | input", "text": "Bash: npm install"},
+  "error": {"kind": "rate_limit"},          // error only: the harness's error type
   "summary": "Researching comms/push design",
   "recap": "- mapped the push path\n- fixed the broker replay\n- tests green",  // opt-in
   "last_decision": {"choice": "Allow", "answered_by": "approver | terminal | timeout",
@@ -117,9 +118,20 @@ messaging grant **and** the topic's share entry includes it (`trusts`: approvers
 }
 ```
 
-- Optional fields are omitted when empty. `needs` only while `needs_you`.
+- Optional fields are omitted when empty. `needs` only while `needs_you`;
+  `error` only while `error`.
+- `error` (red): the turn ended on an API error (Claude `StopFailure`; `kind` is
+  its `error_type`, else `error`, else `unknown`). Like `done`, it is not
+  waiting time; the next prompt → `running`. Not a needs_you push; a `special`
+  agent pushes as on `done`.
+- `away` (yellow): running, but silent. The node checks running agents' local
+  transcript (path from hook input, never sent): mtime older than 60 s (and
+  older than the running period's start) with no tool call in flight (a
+  `tool_use` without a matching `tool_result` in the last 64 KB, or a Codex call
+  without its output) → `away`; a transcript write after that → `running`.
+  Each agent is looked at most every 5 s. Transitions are normal updates.
 - Durations cover closed periods; clients add `now - status_since` to `running_ms`
-  while `running` and to `waiting_ms` while `needs_you`.
+  while `running` or `away` and to `waiting_ms` while `needs_you`.
 - `ended` = graveyard: session closed, or no activity for 24 h (`stale`). Ended
   agents are kept 7 days, then `remove`d. Clients hide them from the main list.
 - Subagents are separate items with `parent`; clients nest them. A running
@@ -240,7 +252,7 @@ asking agent):
 
 Porter sends a push to subscribers with a token:
 - an agent enters `needs_you`;
-- a `special` agent stops (`done`);
+- a `special` agent stops (`done` or `error`);
 - every `porter.notify` (to the phone it is addressed to).
 
 A needs_you transition caused by a permission prompt that the PermissionRequest
@@ -262,7 +274,7 @@ opens the box and drops anything that fails. Plaintext is one of:
 
 ```json
 {"kind": "agent", "machine": "pi", "agent": "<id>", "title": "...", "status": "needs_you",
- "needs": {"kind": "permission", "text": "..."}, "summary": "..."}
+ "needs": {"kind": "permission", "text": "..."}, "error": {"kind": "..."}, "summary": "..."}
 {"kind": "notify", "notify": NOTIFY}           // the porter.notify object, when it fits
 {"kind": "wake", "id": "ntf_…"}                // too large: fetch from the comms inbox
 ```
@@ -295,6 +307,7 @@ The PermissionRequest hook installed by `comms porter install-hooks`:
   hook gives up at `ask_timeout` itself, so porter, not Claude, decides `ask`.
   Reply: `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow|deny|ask"}}}`.
 - Codex PermissionRequest is recorded as `needs_you` only; Codex hooks reply `{}`.
+- Claude `StopFailure` → `error`. Codex has no equivalent hook, so none is installed.
 - SubagentStop without a subagent transcript (`agent_transcript_path`, else
   `<transcript minus .jsonl>/subagents/agent-<id>.jsonl`) is ignored: Claude's
   internal helpers fire those.
@@ -304,7 +317,7 @@ The PermissionRequest hook installed by `comms porter install-hooks`:
 ```
 comms porter setup --approver PEER        write config
 comms porter install-hooks [--uninstall]  Claude + Codex hooks (lifecycle + PermissionRequest)
-comms porter event --agent ID --kind K …  record state (start|prompt|needs|stop|end|update; --recap TEXT)
+comms porter event --agent ID --kind K …  record state (start|prompt|needs|stop|error|end|update; --error-kind K, --recap TEXT)
 comms porter status [--all]               local agents (--all: every subscribed machine, from cache)
 comms porter get MACHINE TOPIC            cached topic value from a peer
 comms porter hook --harness claude|codex  the installed hook (stdin JSON)

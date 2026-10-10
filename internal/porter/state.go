@@ -17,6 +17,7 @@ const (
 	KindPrompt = "prompt" // work started or resumed
 	KindNeeds  = "needs"  // blocked on the user (permission, question)
 	KindStop   = "stop"   // turn finished
+	KindError  = "error"  // turn ended on an API error
 	KindEnd    = "end"    // session ended; agent moves to the graveyard
 	KindUpdate = "update" // metadata only (title, summary, special, ...)
 )
@@ -24,10 +25,15 @@ const (
 // Agent statuses.
 const (
 	StatusRunning  = "running"
+	StatusAway     = "away" // running, but the transcript has been silent (set by the node)
 	StatusNeedsYou = "needs_you"
 	StatusDone     = "done"
+	StatusError    = "error" // the turn ended on an API error
 	StatusEnded    = "ended"
 )
+
+// Active reports whether status counts as running (running or away).
+func Active(status string) bool { return status == StatusRunning || status == StatusAway }
 
 // Graveyard reasons and retention.
 const (
@@ -40,6 +46,12 @@ const (
 type Needs struct {
 	Kind string `json:"kind"`
 	Text string `json:"text"`
+}
+
+// ErrorInfo details an error status: Kind is the harness's error type
+// (rate_limit, overloaded, server_error, ...).
+type ErrorInfo struct {
+	Kind string `json:"kind"`
 }
 
 // Identity links an agent to its comms identity on this machine.
@@ -60,9 +72,12 @@ type Event struct {
 	Parent    string
 	AgentType string
 	Needs     *Needs
+	Error     *ErrorInfo
 	Special   *bool
-	Recap     string    // stored only where config recap = true; the caller decides
-	Decision  *Decision // last resolved permission question for this agent
+	// Transcript is the harness transcript path, kept in local state only.
+	Transcript string
+	Recap      string    // stored only where config recap = true; the caller decides
+	Decision   *Decision // last resolved permission question for this agent
 }
 
 // MaxRecap bounds an agent recap (3-5 short bullets).
@@ -97,6 +112,7 @@ type Agent struct {
 	Identity     *Identity  `json:"identity,omitempty"`
 	Status       string     `json:"status"`
 	Needs        *Needs     `json:"needs,omitempty"`
+	Error        *ErrorInfo `json:"error,omitempty"`
 	Summary      string     `json:"summary,omitempty"`
 	Recap        string     `json:"recap,omitempty"`
 	LastDecision *Decision  `json:"last_decision,omitempty"`
@@ -136,6 +152,9 @@ type State struct {
 	// which a permission question goes to the phone; that notify carries the
 	// push, so the agent-status push for the same transition is skipped.
 	PhoneAsks map[string]time.Time `json:"phone_asks,omitempty"`
+	// Transcripts maps agent id → harness transcript path. Local only: it is
+	// never part of an agent as published.
+	Transcripts map[string]string `json:"transcripts,omitempty"`
 }
 
 // MarkPhoneAsk records that a's current needs_you transition is being asked
@@ -166,6 +185,8 @@ func statusFor(kind string) (string, bool) {
 		return StatusRunning, true
 	case KindNeeds:
 		return StatusNeedsYou, true
+	case KindError:
+		return StatusError, true
 	case KindEnd:
 		return StatusEnded, true
 	}
@@ -225,6 +246,12 @@ func (s *State) Apply(e Event) (*Agent, error) {
 	if e.Special != nil {
 		s.SetSpecial(a, *e.Special)
 	}
+	if e.Transcript != "" {
+		if s.Transcripts == nil {
+			s.Transcripts = map[string]string{}
+		}
+		s.Transcripts[a.ID] = e.Transcript
+	}
 	// An event older than the newest one seen only carries metadata, so a
 	// late hook can never roll the status or its timers back.
 	if e.At.Before(a.LastActiveAt) {
@@ -236,6 +263,12 @@ func (s *State) Apply(e Event) (*Agent, error) {
 		s.setStatus(a, e.At, status, EndClosed)
 		if status == StatusNeedsYou {
 			a.Needs = e.Needs
+		}
+		if status == StatusError {
+			a.Error = e.Error
+			if a.Error == nil {
+				a.Error = &ErrorInfo{Kind: "unknown"}
+			}
 		}
 		if status == StatusEnded {
 			// Subagents cannot outlive their parent.
@@ -253,12 +286,36 @@ func (s *State) setStatus(a *Agent, t time.Time, status, reason string) {
 	delete(s.PhoneAsks, a.ID)
 	a.accumulate(t, status)
 	a.Status = status
-	a.Needs = nil
+	a.Needs, a.Error = nil, nil
 	a.EndedAt, a.EndReason = nil, ""
 	if status == StatusEnded {
 		at := t
 		a.EndedAt, a.EndReason = &at, reason
+		delete(s.Transcripts, a.ID)
 	}
+}
+
+// SetAway moves agent id between running and away at t: away when away is
+// true and it is running, running when away is false and it is away. It
+// reports whether the status changed. A resume counts as activity.
+func (s *State) SetAway(id string, away bool, t time.Time) bool {
+	a := s.Agents[id]
+	if a == nil {
+		return false
+	}
+	t = t.UTC()
+	switch {
+	case away && a.Status == StatusRunning:
+		s.setStatus(a, t, StatusAway, "")
+	case !away && a.Status == StatusAway:
+		s.setStatus(a, t, StatusRunning, "")
+		if t.After(a.LastActiveAt) {
+			a.LastActiveAt = t
+		}
+	default:
+		return false
+	}
+	return true
 }
 
 // SetSpecial sets the special flag. It sticks to a persistent comms identity,
@@ -296,7 +353,7 @@ func (s *State) Sweep(now time.Time) (changed bool, purged []string) {
 	now = now.UTC()
 	busy := map[string]bool{}
 	for _, c := range s.Agents {
-		if c.Parent != "" && (c.Status == StatusRunning || c.Status == StatusNeedsYou) {
+		if c.Parent != "" && (Active(c.Status) || c.Status == StatusNeedsYou) {
 			busy[c.Parent] = true
 		}
 	}
@@ -305,13 +362,14 @@ func (s *State) Sweep(now time.Time) (changed bool, purged []string) {
 			if a.EndedAt == nil || now.Sub(*a.EndedAt) > KeepEnded {
 				delete(s.Agents, id)
 				delete(s.PhoneAsks, id)
+				delete(s.Transcripts, id)
 				purged = append(purged, id)
 			}
 			continue
 		}
 		// Background subagents are silent between start and stop, and a parent
 		// stays alive while any of its subagents works.
-		if a.Parent != "" && a.Status == StatusRunning || busy[id] {
+		if a.Parent != "" && Active(a.Status) || busy[id] {
 			continue
 		}
 		if now.Sub(a.LastActiveAt) > StaleAfter {
@@ -329,7 +387,7 @@ func (a *Agent) accumulate(t time.Time, next string) {
 	if t.After(a.StatusSince) {
 		d := t.Sub(a.StatusSince).Milliseconds()
 		switch a.Status {
-		case StatusRunning:
+		case StatusRunning, StatusAway:
 			a.RunningMS += d
 		case StatusNeedsYou:
 			a.WaitingMS += d
@@ -341,11 +399,11 @@ func (a *Agent) accumulate(t time.Time, next string) {
 	}
 }
 
-// Running counts agents currently running.
+// Running counts agents currently running (away included).
 func (s *State) Running() int {
 	n := 0
 	for _, a := range s.Agents {
-		if a.Status == StatusRunning {
+		if Active(a.Status) {
 			n++
 		}
 	}

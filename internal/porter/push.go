@@ -23,19 +23,23 @@ const MaxPushData = 3072
 // Notice is the plaintext of an encrypted push. It never carries prompts,
 // transcripts or tool input beyond the short needs text.
 type Notice struct {
-	Kind    string `json:"kind"`
-	Machine string `json:"machine"`
-	Agent   string `json:"agent"`
-	Title   string `json:"title,omitempty"`
-	Status  string `json:"status"`
-	Needs   *Needs `json:"needs,omitempty"`
-	Summary string `json:"summary,omitempty"`
+	Kind    string     `json:"kind"`
+	Machine string     `json:"machine"`
+	Agent   string     `json:"agent"`
+	Title   string     `json:"title,omitempty"`
+	Status  string     `json:"status"`
+	Needs   *Needs     `json:"needs,omitempty"`
+	Error   *ErrorInfo `json:"error,omitempty"`
+	Summary string     `json:"summary,omitempty"`
 }
 
 func NoticeFor(machine string, a Agent) Notice {
 	n := Notice{Kind: "agent", Machine: machine, Agent: a.ID, Title: clip(a.Title, 120), Status: a.Status, Summary: clip(a.Summary, 500)}
 	if a.Needs != nil {
 		n.Needs = &Needs{Kind: clip(a.Needs.Kind, 40), Text: clip(a.Needs.Text, 300)}
+	}
+	if a.Error != nil {
+		n.Error = &ErrorInfo{Kind: clip(a.Error.Kind, 40)}
 	}
 	return n
 }

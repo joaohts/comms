@@ -47,6 +47,8 @@ type porterBridge struct {
 
 	// Owned by the attach goroutine.
 	last             map[string]*porter.Agent
+	transcripts      map[string]string    // agent id → transcript path (local only)
+	awayChecked      map[string]time.Time // last away look per agent
 	seen             os.FileInfo
 	lastTrusts       map[string]porter.Trust
 	trustSeen        os.FileInfo
@@ -65,7 +67,7 @@ func newPorterBridge(n *Node) *porterBridge {
 	b := &porterBridge{n: n, dir: dir, cfgPath: n.cfg.PorterConfig, state: porter.Store{Path: filepath.Join(dir, "state.json")},
 		file: porter.Subscribers{Path: filepath.Join(dir, "subscribers.json")}, trustsPath: filepath.Join(dir, "trusts.json"),
 		cache: porter.Cache{Dir: filepath.Join(dir, "cache")}, push: n.cfg.PorterPush, questions: map[string]*question{},
-		peerOK: map[string]bool{}, trustMissing: map[string]time.Time{}}
+		peerOK: map[string]bool{}, trustMissing: map[string]time.Time{}, awayChecked: map[string]time.Time{}}
 	if b.cfgPath == "" {
 		b.cfgPath = porter.ConfigPath()
 	}
@@ -97,7 +99,7 @@ func (n *Node) runPorter() {
 	// on attach carries them instead.
 	b.seen, _ = os.Stat(b.state.Path)
 	if s, e := b.state.Load(); e == nil {
-		b.last = s.Agents
+		b.last, b.transcripts = s.Agents, s.Transcripts
 		b.running = s.Running()
 	} else {
 		log.Printf("porter: %v", e)
@@ -177,6 +179,7 @@ func (b *porterBridge) attach(first bool) error {
 			}
 		case <-pollTick.C:
 			b.poll()
+			b.checkAway(time.Now())
 			b.pollTrusts()
 		case <-slowTick.C:
 			b.maintain()
@@ -457,7 +460,7 @@ func (b *porterBridge) poll() {
 	}
 	b.seen = info
 	prev := b.last
-	b.last = st.Agents
+	b.last, b.transcripts = st.Agents, st.Transcripts
 	changedAgents, removed := porter.Diff(prev, st.Agents)
 	machine := b.machine()
 	recap := b.config().Recap
@@ -477,6 +480,59 @@ func (b *porterBridge) poll() {
 		b.running = r
 		b.publishStatus()
 	}
+}
+
+// checkAway flips running agents with a silent transcript (and no tool call
+// in flight) to away, and away agents with a fresh transcript write back to
+// running. It stats only running/away agents, each at most every
+// PorterAwayCheck, and reads a transcript's tail only when it would go away.
+func (b *porterBridge) checkAway(now time.Time) {
+	every := b.n.cfg.PorterAwayCheck
+	if every <= 0 {
+		every = porter.AwayCheck
+	}
+	for id := range b.awayChecked {
+		if a := b.last[id]; a == nil || !porter.Active(a.Status) {
+			delete(b.awayChecked, id)
+		}
+	}
+	type flip struct {
+		id    string
+		away  bool
+		since time.Time
+	}
+	var flips []flip
+	for id, a := range b.last {
+		path := b.transcripts[id]
+		if !porter.Active(a.Status) || path == "" || now.Sub(b.awayChecked[id]) < every {
+			continue
+		}
+		b.awayChecked[id] = now
+		info, e := os.Stat(path)
+		if e != nil {
+			continue
+		}
+		if next, ok := porter.AwayVerdict(*a, info.ModTime(), now, func() bool { return porter.ToolPending(path) }); ok {
+			flips = append(flips, flip{id, next == porter.StatusAway, a.StatusSince})
+		}
+	}
+	if len(flips) == 0 {
+		return
+	}
+	e := b.state.Update(func(s *porter.State) error {
+		for _, f := range flips {
+			// A hook may have moved the agent since; never override it.
+			if a := s.Agents[f.id]; a != nil && a.StatusSince.Equal(f.since) {
+				s.SetAway(f.id, f.away, now)
+			}
+		}
+		return nil
+	})
+	if e != nil {
+		log.Printf("porter away: %v", e)
+		return
+	}
+	b.poll()
 }
 
 func (b *porterBridge) loadTrusts() *porter.Trusts {

@@ -212,7 +212,8 @@ func sameJSON(a, b any) bool {
 }
 
 // PushWanted reports whether moving from prev (nil when new) to next deserves
-// a push: entering needs_you always, finishing a turn only for special agents.
+// a push: entering needs_you always, finishing a turn (done or error) only
+// for special agents.
 // A freshly started session is not a stop.
 func PushWanted(prev *Agent, next Agent) bool {
 	if prev == nil && next.Status == StatusDone {
@@ -222,7 +223,7 @@ func PushWanted(prev *Agent, next Agent) bool {
 	if !entered {
 		return false
 	}
-	return next.Status == StatusNeedsYou || (next.Special && next.Status == StatusDone)
+	return next.Status == StatusNeedsYou || (next.Special && (next.Status == StatusDone || next.Status == StatusError))
 }
 
 // Subscriber is a peer receiving porter updates. Peer is the peer's immutable

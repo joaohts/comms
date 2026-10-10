@@ -133,9 +133,13 @@ func discoverable(t *testing.T, from *nodeIntegrationFixture, peer, alias string
 
 // newPorterFixture pairs porter machines "mac" and "pi" with a plain "phone"
 // node running the app agent. The phone is the approver on both machines.
-func newPorterFixture(t *testing.T) *porterFixture {
+func newPorterFixture(t *testing.T, change ...func(*Config)) *porterFixture {
 	t.Helper()
-	f := &porterFixture{mac: newPorterNode(t, nil), pi: newPorterNode(t, nil), phone: newNodeIntegration(t, func(c *Config) { c.Lease = 10 * time.Second })}
+	var ch func(*Config)
+	if len(change) > 0 {
+		ch = change[0]
+	}
+	f := &porterFixture{mac: newPorterNode(t, ch), pi: newPorterNode(t, ch), phone: newNodeIntegration(t, func(c *Config) { c.Lease = 10 * time.Second })}
 	pairAll(t, map[string]*nodeIntegrationFixture{"mac": f.mac.nodeIntegrationFixture, "pi": f.pi.nodeIntegrationFixture, "phone": f.phone})
 	for _, n := range []*porterNode{f.mac, f.pi} {
 		c := porter.DefaultConfig()
@@ -817,5 +821,57 @@ func TestPorterRecapOptInAndPermissionPushDedupe(t *testing.T) {
 	nodeIntegrationEventually(t, "agent push", func() bool { return mac.push.count() == 2 })
 	if v := openBox(t, mac.push.call(1), mac.node.Store.Identity, f.phone.node.Store.Identity); v["kind"] != "agent" || v["agent"] != "c2" {
 		t.Fatalf("agent push: %+v", v)
+	}
+}
+
+func TestPorterAwayFromSilentTranscriptAndBack(t *testing.T) {
+	f := newPorterFixture(t, func(c *Config) { c.PorterAwayCheck = 100 * time.Millisecond })
+	mac := f.mac
+	transcript := filepath.Join(t.TempDir(), "s1.jsonl")
+	if err := os.WriteFile(transcript, []byte(`{"type":"user","message":{"content":"go"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(transcript, old, old); err != nil {
+		t.Fatal(err)
+	}
+	f.control(t, "mac", `{"type":"porter.subscribe","v":1,"topics":["agents"]}`)
+	f.expect(t, porter.TypeSubscribed, "", nil)
+	f.expect(t, porter.TypeSnapshot, porter.TopicAgents, nil)
+
+	mac.event(t, porter.Event{Agent: "s1", Harness: "claude", Kind: porter.KindPrompt, At: old, Transcript: transcript})
+	var up struct {
+		Item json.RawMessage `json:"item"`
+	}
+	statusOf := func() porter.Agent {
+		var a porter.Agent
+		if err := json.Unmarshal(up.Item, &a); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(up.Item), "s1.jsonl") {
+			t.Fatalf("transcript path published: %s", up.Item)
+		}
+		return a
+	}
+	f.expect(t, porter.TypeUpdate, porter.TopicAgents, &up)
+	if a := statusOf(); a.Status != porter.StatusRunning {
+		t.Fatalf("first update: %+v", a)
+	}
+	f.expect(t, porter.TypeUpdate, porter.TopicAgents, &up)
+	away := statusOf()
+	if away.Status != porter.StatusAway || away.RunningMS < (110*time.Second).Milliseconds() {
+		t.Fatalf("away update: %+v", away)
+	}
+	// A fresh transcript write brings it back to running.
+	now := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(transcript, now, now); err != nil {
+		t.Fatal(err)
+	}
+	f.expect(t, porter.TypeUpdate, porter.TopicAgents, &up)
+	if a := statusOf(); a.Status != porter.StatusRunning || a.RunningMS < away.RunningMS {
+		t.Fatalf("resume update: %+v", a)
+	}
+	if mac.push.count() != 0 {
+		t.Fatalf("away pushed: %d", mac.push.count())
 	}
 }
