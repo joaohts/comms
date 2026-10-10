@@ -17,7 +17,7 @@ import (
 	"github.com/joaohts/comms/internal/porter"
 )
 
-var Version = "0.2.0"
+var Version = "0.2.1"
 
 const ProtocolVersion = 1
 const MessageTTL = 7 * 24 * time.Hour

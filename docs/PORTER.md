@@ -72,7 +72,7 @@ messaging grant **and** the topic's share entry includes it (`trusts`: approvers
 ```json
 {"type": "porter.subscribed", "v": 1, "machine": "pi",
  "topics": ["agents", "status"], "refused": ["trusts"],
- "approver": false, "push": true, "porter_version": "0.2.0"}
+ "approver": false, "push": true, "porter_version": "0.2.1"}
 ```
 
   followed by one `porter.snapshot` per granted topic.
@@ -112,6 +112,9 @@ messaging grant **and** the topic's share entry includes it (`trusts`: approvers
   "last_decision": {"choice": "Allow", "answered_by": "approver | terminal | timeout",
                     "approver": "phone", "approver_id": "<machine id>", "at": "RFC3339"},
   "special": false,
+  "keep": true,                            // kept (long-lived) agents only
+  "heartbeat_at": "RFC3339",               // kept agents: last liveness ping
+  "paused": true,                          // kept agents: brain up, no new turns
   "started_at": "RFC3339", "last_active_at": "RFC3339", "status_since": "RFC3339",
   "running_ms": 0, "waiting_ms": 0,
   "ended_at": "RFC3339", "end_reason": "closed | stale"   // ended only
@@ -138,6 +141,25 @@ messaging grant **and** the topic's share entry includes it (`trusts`: approvers
   subagent never goes stale (background subagents are silent between start and
   stop), and a parent never goes stale while a subagent is running or
   `needs_you`. Ending a parent ends its subagents.
+- `keep`: a long-lived agent (a daemon such as Joana) rather than a session.
+  Sweep never marks it stale, so it never reaches the graveyard on its own
+  (an explicit `end` still ends it). Set with `--keep` on any event (sticky;
+  `--keep=false` clears it). Agents without `keep` behave exactly as before.
+- `heartbeat_at`: a kept agent pings with
+  `comms porter event --agent ID --kind update --keep --heartbeat [--paused true|false]`.
+  A heartbeat refreshes `heartbeat_at` only: never `last_active_at`, status or
+  timers. It is throttled: `heartbeat_at` changes (and so is published) at most
+  once per 60 s; a ping after a stale gap is always older than that, so coming
+  back fresh is published at once. Clients treat `heartbeat_at` within 3 min as
+  up. Suggested cadence: one ping every 60 s.
+- `paused`: a kept agent whose brain is up but takes no new turns (e.g. its
+  spending cap is reached; messages are held). Set with `--paused true|false`;
+  a change is published immediately.
+- Client colours for a kept agent: `running`/`away`/`needs_you`/`error` as
+  usual; `done` → idle (blue) while `heartbeat_at` is fresh and not `paused`,
+  else deactivated (gray; "Paused · spending cap" when `paused`). Kept agents
+  are never folded as inactive nor shown in the graveyard; when their machine is
+  offline they are not listed.
 - `special` sticks to `identity` when `persistent`, else to the session.
 - `recap`: 3–5 short bullets, at most 600 characters. Porter never generates it
   (no AI in comms): integrations set it with
@@ -156,7 +178,7 @@ messaging grant **and** the topic's share entry includes it (`trusts`: approvers
 ```json
 {"host": "pi", "os": "linux", "uptime_s": 86400, "load": 0.42, "mem_pct": 41,
  "disk_pct": 63, "temp_c": 52.1, "battery_pct": 80,
- "comms_version": "0.2.0", "agents_running": 3, "at": "RFC3339"}
+ "comms_version": "0.2.1", "agents_running": 3, "at": "RFC3339"}
 ```
 
 Published every 60 s and on change of `agents_running`. `temp_c` and
@@ -317,7 +339,8 @@ The PermissionRequest hook installed by `comms porter install-hooks`:
 ```
 comms porter setup --approver PEER        write config
 comms porter install-hooks [--uninstall]  Claude + Codex hooks (lifecycle + PermissionRequest)
-comms porter event --agent ID --kind K …  record state (start|prompt|needs|stop|error|end|update; --error-kind K, --recap TEXT)
+comms porter event --agent ID --kind K …  record state (start|prompt|needs|stop|error|end|update; --error-kind K, --recap TEXT,
+                                          --keep, --heartbeat (kind update), --paused true|false)
 comms porter status [--all]               local agents (--all: every subscribed machine, from cache)
 comms porter get MACHINE TOPIC            cached topic value from a peer
 comms porter hook --harness claude|codex  the installed hook (stdin JSON)

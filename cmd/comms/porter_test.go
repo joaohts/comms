@@ -683,3 +683,35 @@ func TestHookIgnoresSubagentStopWithoutTranscript(t *testing.T) {
 		}
 	}
 }
+
+func TestPorterEventKeepHeartbeatPaused(t *testing.T) {
+	dataDir, cfg := porterTestEnv(t)
+	writeConfig(t, cfg, nil)
+	a, _ := testApp(t, http.NotFoundHandler())
+	run := func(args ...string) error {
+		return a.run(context.Background(), append([]string{"--data-dir", dataDir, "porter", "event", "--agent", "joana"}, args...))
+	}
+	if err := run("--kind", "stop", "--keep", "--title", "Joana"); err != nil {
+		t.Fatal(err)
+	}
+	before := *loadAgents(t, dataDir)["joana"]
+	if err := run("--kind", "update", "--keep", "--heartbeat", "--paused", "true"); err != nil {
+		t.Fatal(err)
+	}
+	ag := loadAgents(t, dataDir)["joana"]
+	if !ag.Keep || !ag.Paused || ag.HeartbeatAt == nil || !ag.LastActiveAt.Equal(before.LastActiveAt) || ag.Status != porter.StatusDone {
+		t.Fatalf("heartbeat event: %+v", ag)
+	}
+	if err := run("--kind", "update", "--heartbeat", "--paused", "false"); err != nil {
+		t.Fatal(err)
+	}
+	if ag = loadAgents(t, dataDir)["joana"]; ag.Paused || !ag.Keep {
+		t.Fatalf("paused=false or keep lost: %+v", ag)
+	}
+	if err := run("--kind", "stop", "--heartbeat"); err == nil {
+		t.Fatal("--heartbeat with kind stop accepted")
+	}
+	if err := run("--kind", "update", "--paused", "maybe"); err == nil {
+		t.Fatal("bad --paused accepted")
+	}
+}
