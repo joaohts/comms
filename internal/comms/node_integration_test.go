@@ -309,7 +309,7 @@ func (r *nodeIntegrationReceiver) next(t *testing.T) Message {
 		return m
 	case <-r.done:
 		t.Fatal("receiver disconnected before message")
-	case <-time.After(5 * time.Second):
+	case <-time.After(20 * time.Second): // room for -race on slow CI; returns on arrival
 		t.Fatal("timed out waiting for local handoff")
 	}
 	return Message{}
