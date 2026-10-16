@@ -279,7 +279,7 @@ func (b *porterBridge) subscribe(peer, agent string, c porter.Inbound) {
 		return
 	}
 	reply := b.subscribed(cfg, peer, c.Topics, sub.Push != nil)
-	b.send(sub.Peer+":"+sub.Agent, reply)
+	b.sendTopic(sub.Peer+":"+sub.Agent, reply)
 	for _, t := range reply.Topics {
 		b.snapshot(sub, t)
 	}
@@ -324,7 +324,7 @@ func (b *porterBridge) resign(peer, agent string) {
 	if ok {
 		topics = sub.Topics
 	}
-	b.send(peer+":"+agent, b.subscribed(b.config(), peer, topics, ok && sub.Push != nil))
+	b.sendTopic(peer+":"+agent, b.subscribed(b.config(), peer, topics, ok && sub.Push != nil))
 }
 
 // current returns subscribers that still hold a messaging grant, forgetting
@@ -370,12 +370,30 @@ func (b *porterBridge) porterSession() Session {
 	return b.session
 }
 
+// PorterTopicTTL bounds topic traffic (subscribe, subscribed, snapshot,
+// update, remove). Each item is superseded by the next one and a subscriber
+// gets a fresh snapshot whenever it subscribes, so keeping these for the full
+// MessageTTL only fills an offline subscriber's queue until it refuses
+// everything else, notifications included.
+const PorterTopicTTL = 10 * time.Minute
+
+// send delivers a porter message that must survive like ordinary mail
+// (notifications, questions, answers, cancels).
 func (b *porterBridge) send(to string, v any) error {
+	return b.sendTTL(to, v, 0)
+}
+
+// sendTopic delivers superseded topic state with PorterTopicTTL.
+func (b *porterBridge) sendTopic(to string, v any) error {
+	return b.sendTTL(to, v, PorterTopicTTL)
+}
+
+func (b *porterBridge) sendTTL(to string, v any, ttl time.Duration) error {
 	s := b.porterSession()
 	if s.ID == "" {
 		return problem(503, "porter_not_ready", "porter is not attached yet")
 	}
-	_, e := b.n.Send(b.n.ctx, SendRequest{SessionID: s.ID, To: to, Body: string(marshal(v))})
+	_, e := b.n.Send(b.n.ctx, SendRequest{SessionID: s.ID, To: to, Body: string(marshal(v)), TTLMS: ttl.Milliseconds()})
 	if e != nil {
 		log.Printf("porter send: %s", errorCode(e))
 	}
@@ -391,15 +409,15 @@ func (b *porterBridge) snapshot(s porter.Subscriber, topic string) {
 			log.Printf("porter: %v", e)
 			return
 		}
-		b.send(to, porter.NewSnapshot(b.machine(), topic, porter.AgentItems(st, b.config().Recap), MaxBody-1024))
+		b.sendTopic(to, porter.NewSnapshot(b.machine(), topic, porter.AgentItems(st, b.config().Recap), MaxBody-1024))
 	case porter.TopicStatus:
-		b.send(to, porter.NewValueSnapshot(b.machine(), topic, b.status()))
+		b.sendTopic(to, porter.NewValueSnapshot(b.machine(), topic, b.status()))
 	case porter.TopicTrusts:
 		items := []any{}
 		for _, t := range b.loadTrusts().List() {
 			items = append(items, t.Item())
 		}
-		b.send(to, porter.NewSnapshot(b.machine(), topic, items, MaxBody-1024))
+		b.sendTopic(to, porter.NewSnapshot(b.machine(), topic, items, MaxBody-1024))
 	}
 }
 
@@ -430,7 +448,7 @@ func (b *porterBridge) publishStatus() {
 	}
 	u := porter.NewValueUpdate(b.machine(), porter.TopicStatus, b.status())
 	for _, s := range subs {
-		b.send(s.Peer+":"+s.Agent, u)
+		b.sendTopic(s.Peer+":"+s.Agent, u)
 	}
 }
 
@@ -466,14 +484,14 @@ func (b *porterBridge) poll() {
 	recap := b.config().Recap
 	for _, s := range b.receiving(porter.TopicAgents) {
 		for _, a := range changedAgents {
-			b.send(s.Peer+":"+s.Agent, porter.NewUpdate(machine, porter.TopicAgents, a.Published(recap)))
+			b.sendTopic(s.Peer+":"+s.Agent, porter.NewUpdate(machine, porter.TopicAgents, a.Published(recap)))
 			// A permission question on its way to the phone carries the push.
 			if s.Push != nil && porter.PushWanted(prev[a.ID], a) && !st.PhoneAsked(a) {
 				b.pushTo(s, porter.NoticeFor(machine, a.View()), nil)
 			}
 		}
 		for _, id := range removed {
-			b.send(s.Peer+":"+s.Agent, porter.NewRemove(machine, porter.TopicAgents, id))
+			b.sendTopic(s.Peer+":"+s.Agent, porter.NewRemove(machine, porter.TopicAgents, id))
 		}
 	}
 	if r := st.Running(); r != b.running {
@@ -570,12 +588,12 @@ func (b *porterBridge) pollTrusts() {
 	for _, s := range b.receiving(porter.TopicTrusts) {
 		for id, t := range next {
 			if p, ok := prev[id]; !ok || p != t {
-				b.send(s.Peer+":"+s.Agent, porter.NewUpdate(machine, porter.TopicTrusts, t.Item()))
+				b.sendTopic(s.Peer+":"+s.Agent, porter.NewUpdate(machine, porter.TopicTrusts, t.Item()))
 			}
 		}
 		for id := range prev {
 			if _, ok := next[id]; !ok {
-				b.send(s.Peer+":"+s.Agent, porter.NewRemove(machine, porter.TopicTrusts, id))
+				b.sendTopic(s.Peer+":"+s.Agent, porter.NewRemove(machine, porter.TopicTrusts, id))
 			}
 		}
 	}
@@ -695,7 +713,7 @@ func (b *porterBridge) subscribePeers(now time.Time) {
 	sent := 0
 	for _, p := range who {
 		if due[p.MachineID] && p.Alias == PorterAlias {
-			b.send(p.MachineID+":"+p.AgentID, map[string]any{"type": porter.TypeSubscribe, "v": porter.WireVersion, "topics": porter.Topics})
+			b.sendTopic(p.MachineID+":"+p.AgentID, map[string]any{"type": porter.TypeSubscribe, "v": porter.WireVersion, "topics": porter.Topics})
 			sent++
 		}
 	}

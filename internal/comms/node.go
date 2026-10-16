@@ -857,7 +857,7 @@ func (n *Node) Send(ctx context.Context, q SendRequest) (Message, error) {
 	if e != nil {
 		return zero, e
 	}
-	m := Message{ID: q.ID, SenderMachine: n.Store.Identity.MachineID, SenderAgent: s.AgentID, RecipientMachine: machine, RecipientAgent: agent, Kind: "message", Body: q.Body, State: "queued", CreatedAt: n.createdAt(), ExpiresAt: time.Now().Add(MessageTTL).UnixMilli(), Hash: hash}
+	m := Message{ID: q.ID, SenderMachine: n.Store.Identity.MachineID, SenderAgent: s.AgentID, RecipientMachine: machine, RecipientAgent: agent, Kind: "message", Body: q.Body, State: "queued", CreatedAt: n.createdAt(), ExpiresAt: time.Now().Add(sendTTL(q.TTLMS)).UnixMilli(), Hash: hash}
 	if machine != n.Store.Identity.MachineID {
 		if s.Scope != "global" {
 			return zero, problem(403, "local_only", "local attachment cannot send remotely")
@@ -887,6 +887,14 @@ func (n *Node) Send(ctx context.Context, q SendRequest) (Message, error) {
 		n.publish("messages")
 	}
 	return m, e
+}
+// sendTTL is the lifetime of a new message: MessageTTL unless the sender asked
+// for something shorter.
+func sendTTL(ms int64) time.Duration {
+	if ms > 0 && time.Duration(ms)*time.Millisecond < MessageTTL {
+		return time.Duration(ms) * time.Millisecond
+	}
+	return MessageTTL
 }
 func payloadFor(m Message) Payload {
 	p := Payload{Routing: Routing{ProtocolVersion, m.ID, m.SenderMachine, m.RecipientMachine, m.Kind, m.ExpiresAt}, SenderAgent: m.SenderAgent, RecipientAgent: m.RecipientAgent, CreatedAt: m.CreatedAt, Body: m.Body}
