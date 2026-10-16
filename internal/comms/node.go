@@ -888,6 +888,7 @@ func (n *Node) Send(ctx context.Context, q SendRequest) (Message, error) {
 	}
 	return m, e
 }
+
 // sendTTL is the lifetime of a new message: MessageTTL unless the sender asked
 // for something shorter.
 func sendTTL(ms int64) time.Duration {

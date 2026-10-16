@@ -695,6 +695,7 @@ func (s *Store) FailRevoked(peer string) error {
 func (s *Store) PendingIncoming(limit int) ([]Message, error) {
 	return s.selectMessages(`WHERE kind='message' AND recipient_machine_id=? AND state IN('queued','received') AND next_attempt_at<=? AND expires_at>? ORDER BY created_at,id LIMIT ?`, s.Identity.MachineID, Now(), Now(), limit)
 }
+
 // PendingOutgoing returns due outbound work. For messages it returns only the
 // earliest due one per recipient agent: the sender forwards one message per
 // recipient at a time anyway, and listing a whole backlog for one recipient
