@@ -695,8 +695,19 @@ func (s *Store) FailRevoked(peer string) error {
 func (s *Store) PendingIncoming(limit int) ([]Message, error) {
 	return s.selectMessages(`WHERE kind='message' AND recipient_machine_id=? AND state IN('queued','received') AND next_attempt_at<=? AND expires_at>? ORDER BY created_at,id LIMIT ?`, s.Identity.MachineID, Now(), Now(), limit)
 }
+
+// PendingOutgoing returns due outbound work. For messages it returns only the
+// earliest due one per recipient agent: the sender forwards one message per
+// recipient at a time anyway, and listing a whole backlog for one recipient
+// would fill the window and starve every other recipient behind it.
 func (s *Store) PendingOutgoing(limit int) ([]Message, error) {
-	return s.selectMessages(`WHERE sender_machine_id=? AND recipient_machine_id<>? AND state IN('queued','forwarded') AND next_attempt_at<=? AND expires_at>? ORDER BY kind DESC,created_at,id LIMIT ?`, s.Identity.MachineID, s.Identity.MachineID, Now(), Now(), limit)
+	now := Now()
+	return s.selectMessages(`WHERE sender_machine_id=? AND recipient_machine_id<>? AND state IN('queued','forwarded') AND next_attempt_at<=? AND expires_at>?
+ AND (kind<>'message' OR NOT EXISTS (SELECT 1 FROM messages e WHERE e.sender_machine_id=messages.sender_machine_id AND e.kind='message'
+  AND e.recipient_machine_id=messages.recipient_machine_id AND e.recipient_agent_id=messages.recipient_agent_id
+  AND e.state IN('queued','forwarded') AND e.next_attempt_at<=? AND e.expires_at>?
+  AND (e.created_at<messages.created_at OR (e.created_at=messages.created_at AND e.id<messages.id))))
+ ORDER BY kind DESC,created_at,id LIMIT ?`, s.Identity.MachineID, s.Identity.MachineID, now, now, now, now, limit)
 }
 func (s *Store) selectMessages(tail string, args ...any) ([]Message, error) {
 	return selectMessagesDB(s.DB, tail, args...)

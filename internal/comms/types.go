@@ -204,6 +204,10 @@ type SendRequest struct {
 	To        string `json:"to"`
 	Body      string `json:"body"`
 	ID        string `json:"id,omitempty"`
+	// TTLMS shortens the message lifetime below MessageTTL (0 = MessageTTL).
+	// Superseded state such as porter topic updates uses it so an offline
+	// recipient never accumulates days of stale mail.
+	TTLMS int64 `json:"ttl_ms,omitempty"`
 }
 type Handoff struct {
 	SenderMachine string `json:"sender_machine_id"`
